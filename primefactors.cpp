@@ -14,14 +14,17 @@ int getNextPrime(int current_prime)
 {
     int next_prime;
 
+    //other than 2 -> 3, all other primes will be at least 2 higher
+    //than the current prime (primes are odd other than 2)
     if(current_prime == 2) {
         next_prime = current_prime + 1;
     } else {
         next_prime = current_prime + 2;
     }
 
+    //to see if test number is prime 
 
-    for ( int i = next_prime - 2; i > 1; i--) {
+    for ( int i = next_prime - 1; i > 1; i--) {
         if(next_prime % i == 0) {
             return getNextPrime(next_prime);
         }
@@ -31,14 +34,19 @@ int getNextPrime(int current_prime)
 }
 int main()
 {
-
+    //init variables
     int number = 0;
     int sum = 0;
     int prime_factor = 2;
 
+    //Get input number from user
     number = getInt();
+
+    //store input for unique sums 
     int second_number = number;
 
+    //if the number can be divided by the prime do so and add it to the sum
+    //otherwise find the next prime number
     while (number > 1) {
         if( number % prime_factor == 0) {
             number = number / prime_factor;
