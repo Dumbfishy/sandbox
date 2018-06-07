@@ -1,0 +1,82 @@
+commit 1c9133601ae809ad93cc70174f61d4ee328cf7ac
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Fri Apr 6 14:20:45 2018 -0400
+
+    minor comment clean up
+
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index faa444e..278a7f3 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -266,7 +266,7 @@ void VnmIpc::handleFdsReady(void)
+ 
+     /* first check if our pipe has anything */
+     if (FD_ISSET(m_signalPipeRead, &m_rfds)) {
+-        DEBUG("Data is ready on readPipe\n");
++        DEBUG("Data is ready on the VNM_ipc readPipe\n");
+         ret = selectVnmCall();
+         if (ret == false) {
+             DEBUG("selectVnmCall() failed\n");
+@@ -283,7 +283,8 @@ void VnmIpc::handleFdsReady(void)
+             DEBUG("Successfully cleared the wake-up pipe - %d\n", buf);
+         }
+     } else if (FD_ISSET(m_signalIntfUpdate, &m_rfds)) {
+-        DEBUG("Data is ready on IntfUpdate\n");
++        DEBUG("Detected a networking change or update, check if it was for a monitored Interface\n");
++        /* The m_signalIntfUpdate pipe is read/cleared within checkIntfIpAddress, no need to manually clear the pipe */
+         ret = checkIntfIpAddress();
+         if (ret == false) {
+             DEBUG("checkIntfAddress() failed\n");
+@@ -482,14 +483,14 @@ bool VnmIpc::selectVnmCall()
+     VnmIpcReq_t vnmRequest;
+ 
+     ENTER();
+-    DEBUG("in select\n");
++    DEBUG("Check the vnmRequest Type and select the correct handler function\n");
+ 
+     { /* m_qMutex */
+         /* lock the mutex for checking the Top request Type */
+         std::unique_lock<std::mutex> lock(m_qMutex);
+ 
+         if(m_reqsQ.empty()) {
+-            ERROR("nothing in the queue\n");
++            ERROR("nothing in the vnmRequest queue\n");
+             rc = false;
+             goto LEAVE;
+         } else {
+@@ -540,8 +541,6 @@ bool VnmIpc::handleClearIpv4(VnmIpcReq_t vnmRequest)
+     }
+     rc = true;
+ 
+-    //TODO: Remove the interface from our VNM_IPC interface list?
+-
+ LEAVE:
+     EXIT();
+     return(rc);
+@@ -604,6 +603,9 @@ bool VnmIpc::handleRequestDhcpServer(VnmIpcReq_t vnmRequest)
+     ENTER();
+ 
+     WARN("DHCP Server requests currenly not supported\n");
++    //TODO: update request with Server Config info
++    //      Tracked with TCU-4866
++    //
+     //INFO("calling into vnm_ipc RequestDhcpServer()\n");
+     checkIntfList(vnmRequest.intf);
+ 
+@@ -654,8 +656,6 @@ bool VnmIpc::checkIntfIpAddress()
+                                         (ipAddrRaw >> 8) & 0xff,
+                                          ipAddrRaw & 0xff);
+ 
+-    //DEBUG("Interface name is %s\n", intName);
+-
+     /* check that the Interface changed is one we are monitoring and update accordingly if yes */
+     for (auto iter = m_intfs.begin();
+               iter != m_intfs.end();
+@@ -671,6 +671,7 @@ bool VnmIpc::checkIntfIpAddress()
+                     iter->hasIpAddr = true;
+                     iter->ipAddr = ipAddrString;
+ 
++                    //TODO: Make this a general wlan_srv IPaddrComplete Action
+                     new_action = new WlanAction {
+                             WlanActionType::WstasTypeIpAddrCmplt,
+                             WlanActionSource::SrcInternal,

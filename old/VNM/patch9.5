@@ -1,0 +1,215 @@
+commit 2142fa9bef867ce7b4e28be87ca17f6b68bc394f
+Merge: ab7a79c 291b285
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Sun Apr 8 16:54:14 2018 -0400
+
+    Merge from Master
+
+diff --cc service/wlan_srv/wlan_srv.cpp
+index e22a52e,0673b5f..1c6fba5
+--- a/service/wlan_srv/wlan_srv.cpp
++++ b/service/wlan_srv/wlan_srv.cpp
+@@@ -483,170 -265,7 +483,173 @@@ int WlanSrv::queueEventAction(WlanActio
+  
+      EXIT();
+      return(rc);
+ -}
+ +} /* WlanSrv::queueEventAction() */
+ +
+ +
+ +// TODO: add Doxygen
+ +int WlanSrv::processWlanActionApi(WlanAction *action)
+ +{
+ +    WlanContext *ctx = static_cast<WlanContext_t *>(m_globalCtx);
+ +    int rc = 0;
+ +    ENTER();
+ +
+ +    INFO("Processing wlanAction id = %s - %s from wlan_srv API queue\n",
+ +         action->getIdStr().c_str(), action->getTypeStr());
+ +
+ +    switch (action->getGroup()) {
+ +    case (WlanActionGroup::GroupWlanSrv):
+ +        switch (action->getType()) {
+ +#ifdef CONFIG_EMC_FEATURE
+ +        case (WlanActionType::WlanSrvTypeEmcEnable):
+ +            rc = handleApiEmcEnable(action);
+ +            break;
+ +        case (WlanActionType::WlanSrvTypeEmcDisable):
+ +            rc = handleApiEmcDisable(action);
+ +            break;
+ +#else
+ +        case (WlanActionType::WlanSrvTypeEmcEnable):
+ +        case (WlanActionType::WlanSrvTypeEmcDisable):
+ +            action->startOfProcessing();
+ +            WARN("Received EMC wlan_action while feature is not supported id = %s (%s)\n",
+ +                    action->getIdStr().c_str(), action->getTypeStr());
+ +            rc = -2;
+ +
+ +            action->setReturnCode(rc);
+ +            action->endOfProcessing();
+ +            break;
+ +#endif /* CONFIG_EMC_FEATURE */
+++        case (WlanActionType::WlanSrvTypeIpAddrUpdate):
+++            handleIpAddrUpdate(action);
+++            break;
+ +        default:
+ +            action->startOfProcessing();
+ +            ERROR("Received unknown action type %d\n", static_cast<int>(action->getType()));
+ +            rc = -1;
+ +
+ +            action->setReturnCode(rc);
+ +            action->endOfProcessing();
+ +            break;
+ +        } /* switch (action->getType()) */
+ +        break;
+ +#ifdef CONFIG_WSTAS_FEATURE
+ +    case (WlanActionGroup::GroupWstas):
+ +        /* processing depending on wlan_srv state machine */
+ +        switch (StateMachine::state()) {
+ +        case (WlanSrvState::Off):
+ +        case (WlanSrvState::MasterReset):
+ +        case (WlanSrvState::Ecall):
+ +        case (WlanSrvState::Error):
+ +#ifdef CONFIG_EMC_FEATURE
+ +        case (WlanSrvState::Emc):
+ +#endif /* CONFIG_EMC_FEATURE */
+ +            /* reject as we can't process this at this time */
+ +            ERROR("Unable to process WSTAS actions at this time\n");
+ +            // TODO: add rejection code
+ +            action->setReturnCode(-1);
+ +            action->startOfProcessing();
+ +            action->endOfProcessing();
+ +            break;
+ +        case (WlanSrvState::On):
+ +        case (WlanSrvState::Provisioning):
+ +            (ctx->wstas)->queueAction(action);
+ +            break;
+ +        default:
+ +            ERROR("Wlan_srv is unknown state\n");
+ +            action->setReturnCode(-1);
+ +            action->startOfProcessing();
+ +            action->endOfProcessing();
+ +            break;
+ +        } /* switch (StateMachine::state()) */
+ +        break;
+ +#endif /* CONFIG_WSTAS_FEATURE */
+ +#ifdef CONFIG_WHSS_FEATURE
+ +    case (WlanActionGroup::GroupWhss):
+ +        /* processing depending on wlan_srv state machine */
+ +        switch (StateMachine::state()) {
+ +        case (WlanSrvState::Off):
+ +        case (WlanSrvState::MasterReset):
+ +        case (WlanSrvState::Ecall):
+ +        case (WlanSrvState::Error):
+ +#ifdef CONFIG_EMC_FEATURE
+ +        case (WlanSrvState::Emc):
+ +#endif /* CONFIG_EMC_FEATURE */
+ +            /* reject as we can't process this at this time */
+ +            ERROR("Unable to process WHSS actions at this time\n");
+ +            // TODO: add rejection code
+ +            action->setReturnCode(-1);
+ +            action->startOfProcessing();
+ +            action->endOfProcessing();
+ +            break;
+ +        case (WlanSrvState::On):
+ +        case (WlanSrvState::Provisioning):
+ +            (ctx->whss)->queueAction(action);
+ +            break;
+ +        default:
+ +            ERROR("Wlan_srv is unknown state\n");
+ +            action->setReturnCode(-1);
+ +            action->startOfProcessing();
+ +            action->endOfProcessing();
+ +            break;
+ +        } /* switch (StateMachine::state()) */
+ +        break;
+ +#endif /* CONFIG_WHSS_FEATURE */
+ +#ifdef CONFIG_WAPS_FEATURE
+ +    case (WlanActionGroup::GroupWaps):
+ +        /* processing depending on wlan_srv state machine */
+ +        switch (StateMachine::state()) {
+ +        case (WlanSrvState::Off):
+ +        case (WlanSrvState::MasterReset):
+ +        case (WlanSrvState::Ecall):
+ +        case (WlanSrvState::Error):
+ +#ifdef CONFIG_EMC_FEATURE
+ +        case (WlanSrvState::Emc):
+ +#endif /* CONFIG_EMC_FEATURE */
+ +            /* reject as we can't process this at this time */
+ +            ERROR("Unable to process WAPS actions at this time\n");
+ +            // TODO: add rejection code
+ +            action->setReturnCode(-1);
+ +            action->startOfProcessing();
+ +            action->endOfProcessing();
+ +            break;
+ +        case (WlanSrvState::On):
+ +        case (WlanSrvState::Provisioning):
+ +            (ctx->waps)->queueAction(action);
+ +            break;
+ +        default:
+ +            ERROR("Wlan_srv is unknown state\n");
+ +            action->setReturnCode(-1);
+ +            action->startOfProcessing();
+ +            action->endOfProcessing();
+ +            break;
+ +        } /* switch (StateMachine::state()) */
+ +        break;
+ +#endif /* CONFIG_WAPS_FEATURE */
+ +#ifdef CONFIG_BTS_FEATURE
+ +    case (WlanActionGroup::GroupBts):
+ +            /* Bts actions are always processed */
+ +            (ctx->bts)->queueAction(action);
+ +        break;
+ +#endif /* CONFIG_BTS_FEATURE */
+ +    default:
+ +        action->startOfProcessing();
+ +
+ +        ERROR("Received invalid wlan_action id = %s (%s)\n",
+ +                action->getIdStr().c_str(), action->getTypeStr());
+ +        // TODO: properly handle this error
+ +        rc = -1;
+ +
+ +        action->setReturnCode(rc);
+ +        action->endOfProcessing();
+ +        break;
+ +    } /* switch (action->getGroup()) */
+ +
+ +    // TODO: make this print safer since we're operating on zombies
+ +    INFO("Done processing wlanAction id = %s - %s from wlan_srv API queue\n",
+ +          action->getIdStr().c_str(), action->getTypeStr());
+ +
+ +    EXIT();
+ +    return(rc);
+ +} /* WlanSrv::processWlanActionApi() */
+  
+  
+  //TODO: add doxygen
+@@@ -688,7 -307,7 +691,7 @@@ int WlanSrv::processWlanActionEvent(Wla
+          case (WlanSrvState::Ecall):
+          case (WlanSrvState::Error):
+              /* reject as we can't process this at this time */
+--            ERROR("Unable to process WSTAS actions at this time\n");
+++            ERROR("Unable to process WAPS actions at this time\n");
+              // TODO: add rejection code
+              action->setReturnCode(-1);
+              action->startOfProcessing();
+diff --cc service/wlan_srv/wlan_srv.hpp
+index 9bfd0a7,143c7fd..3525bcb
+--- a/service/wlan_srv/wlan_srv.hpp
++++ b/service/wlan_srv/wlan_srv.hpp
+@@@ -80,14 -71,7 +80,15 @@@ class WlanSrv : public util::StateMachi
+          int processWlanAction(WlanAction *action);
+  
+          void handleIpAddrUpdate(WlanAction *action);
++ 
+ +        int priorityQueueAction(WlanAction *action);
+ +
+ +        int queueApiAction(WlanAction *action, bool priority);
+ +        int queueEventAction(WlanAction *action, bool priority);
+ +
+ +        int processWlanActionApi(WlanAction *action);
+ +        int processWlanActionEvent(WlanAction *action);
+ +
+          int HandleOffToOn();
+          int HandleOnToError();
+          int HandleOnToProvisioning();

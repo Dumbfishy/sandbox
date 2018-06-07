@@ -1,0 +1,31 @@
+10522 //#ifdef FORD_SECTION
+10523 #define M 214783647
+10524 #define A 168027
+10525 #define Q ( M / A )
+10526 #define R ( M % A )
+10528 
+10529 int wlan_rand(void)
+10530 {   
+10531     int seed = vos_timer_get_system_time();
+10532     seed = A * (seed % Q) - R * (seed / Q);
+10533     
+10534     if (seed <= 0) {
+10535         seed += M;
+10536     }
+10537     
+10538     return seed;
+10539 }
+10540 
+10541 //#endif //FORD_SECTION
+
+
+
+
+10585 //#ifdef FORD_SECTION
+10586       hddLog(VOS_TRACE_LEVEL_ERROR,"KJ: ~~TEMP~~ randomizing MAC address of TCU %s",__func__);
+10587       for (i = 1; i < 6; i++) {
+10588          macAddr[i-1] = (wlan_rand()*i) % 254;
+10589       }
+10590 
+10591 //#endif //FORD_SECTION
+

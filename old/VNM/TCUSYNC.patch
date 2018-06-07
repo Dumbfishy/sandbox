@@ -1,0 +1,52 @@
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 6a2176c..a813a89 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -15,8 +15,17 @@
+ 
+ /* INCLUDES *******************************************************************/
+ #include <sys/socket.h>
++#include <ifaddrs.h>
++
++#ifdef WLAN_TCU
+ #include <linux/netlink.h>
+ #include <linux/rtnetlink.h>
++#endif /* WLAN_TCU */
++
++#ifdef WLAN_SYNC4
++#include <net/route.h>
++#endif /* WLAN_SYNC4 */
++
+ #include <arpa/inet.h>
+ #include "wlan_srv-logger.hpp"
+ #include "vnm/vnmipcif.hpp"
+@@ -109,7 +118,13 @@ bool VnmIpc::start()
+     m_signalPipeRead = pipeFd[0];
+     m_signalPipeWrite = pipeFd[1];
+ 
++#ifdef WLAN_TCU
+     m_signalIntfUpdate = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
++#endif /* WLAN_TCU */
++
++#ifdef WLAN_SYNC4
++    m_signalIntfUpdate = socket(PF_ROUTE, SOCK_RAW, 0);
++#endif /* WLAN_SYNC4 */
+     if (m_signalIntfUpdate < 0) {
+         ERROR("Failed to open network socket\n");
+         rc = false;
+@@ -118,6 +133,7 @@ bool VnmIpc::start()
+         DEBUG("Successfully opened socket, fd - %d\n", m_signalIntfUpdate);
+     }
+ 
++#ifdef WLAN_TCU
+     addr.nl_family = AF_NETLINK;
+     addr.nl_groups = RTMGRP_IPV4_IFADDR;
+ 
+@@ -129,6 +145,7 @@ bool VnmIpc::start()
+     } else {
+         DEBUG("Successfully Bind'ed the IntfUpdate pipe\n");
+     }
++#endif /* WLAN_TCU */
+ 
+     m_vnmIpcRetCode = m_vnmIpcInstance.initialize(m_vnmIpcId);
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {

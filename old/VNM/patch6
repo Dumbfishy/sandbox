@@ -1,0 +1,755 @@
+commit a8739fcf459507360010fc91853219c481339f8f
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Thu Apr 5 15:02:24 2018 -0400
+
+    added interface monitoring to waitForData()
+
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 2c7cd01..5afb77e 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -14,6 +14,10 @@
+  */
+ 
+ /* INCLUDES *******************************************************************/
++#include <sys/socket.h>
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++#include <arpa/inet.h>
+ #include "wlan_srv-logger.hpp"
+ #include "vnm/vnmipcif.hpp"
+ 
+@@ -29,6 +33,7 @@ namespace wlan {
+ static const char* TAG = "vnm_ipc";
+ 
+ #define WRITE_TO_FD 1
++#define INTF_MONITOR_FILE_PATH "/proc/net/fib_trie"
+ /* ****************************************************************************/
+ 
+ /* GLOBALS ********************************************************************/
+@@ -50,6 +55,7 @@ VnmIpc::VnmIpc(void *ctx):
+ 
+     m_signalPipeRead = -1;
+     m_signalPipeWrite = -1;
++    m_signalIntfUpdate = -1;
+ 
+     FD_ZERO(&m_rfds);
+     m_maxFd = 0;
+@@ -63,6 +69,17 @@ VnmIpc::~VnmIpc()
+     ENTER();
+ 
+     // TODO: add clean up code here
++    m_thread = NULL;
++    m_running = NULL;
++
++    m_intfs.clear();
++    m_reqsQ.clear();
++
++    m_signalPipeRead = 0;
++    m_signalPipeWrite = 0;
++
++    FD_ZERO(&m_rfds);
++    m_maxFd = 0;
+ 
+     EXIT();
+ } /* VnmIpc::VnmIpc() */
+@@ -73,6 +90,7 @@ bool VnmIpc::start()
+     int pipeFd[2] = {-1, -1};
+     bool rc = false;
+     int ret = 0;
++    struct sockaddr_nl addr = {0};
+ 
+     ENTER();
+ 
+@@ -90,8 +108,26 @@ bool VnmIpc::start()
+     m_signalPipeRead = pipeFd[0];
+     m_signalPipeWrite = pipeFd[1];
+ 
+-    // TODO: start resources so that we can monitor for ip address changes on
+-    // intf we care about
++    m_signalIntfUpdate = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
++    if (m_signalIntfUpdate < 0) {
++        ERROR("Failed to open network socket\n");
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully opened socket, fd - %d\n", m_signalIntfUpdate);
++    }
++
++    addr.nl_family = AF_NETLINK;
++    addr.nl_groups = RTMGRP_IPV4_IFADDR;
++
++    ret = bind(m_signalIntfUpdate, (struct sockaddr *)&addr, sizeof(addr));
++    if (ret < 0) {
++        ERROR("Failed to bind IntfUpdate pipe - %s\n", strerror(errno));
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully Bind'ed the IntfUpdate pipe\n");
++    }
+ 
+     m_vnmIpcRetCode = m_vnmIpcInstance.initialize(m_vnmIpcId);
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+@@ -103,7 +139,6 @@ bool VnmIpc::start()
+     /* start the mainLoop in it's own thread */
+     m_running = true;
+     m_thread = new std::thread(&VnmIpc::waitForData, this);
+-    rc = true;
+ 
+     INFO("Successfully started vnm_ipc\n");
+     rc = true;
+@@ -120,6 +155,11 @@ bool VnmIpc::stop()
+ 
+     ENTER();
+ 
++    m_running = false;
++    INFO("waiting for vnm thread to end...\n");
++    m_thread->join();
++    INFO("vnm thread done\n");
++
+     // TODO: add more code to clean up what we started here
+     if (m_signalPipeRead >= 0) {
+         close(m_signalPipeRead);
+@@ -129,18 +169,19 @@ bool VnmIpc::stop()
+         close(m_signalPipeWrite);
+     }
+ 
++    /*
+     // TODO: stop any resources we started
+-    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode("intf"); //this should be from the inft_list
++    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode("intf\n"); //this should be from the inft_list
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+         ERROR("Failed to set DHCP Idle Mode for vnm_ipc\n");
+         rc = false;
+         goto LEAVE;
+     }
+-
++    */
+     INFO("Successfully stopped vnm_ipc\n");
+     rc = true;
+ 
+-LEAVE:
++//LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::stop() */
+@@ -155,9 +196,9 @@ void VnmIpc::waitForData()
+ 
+     while (m_running)
+     {
+-        TRACE("waiting for new connections...\n");
++        //TODO: return this print to TRACE
++        DEBUG("waiting for new connections...\n");
+ 
+-        // TODO: setup the rfds with the sockets we need to monitor
+         setupRfds();
+ 
+         /* use a time out of 1 sec so shutdown is timely */
+@@ -188,23 +229,18 @@ void VnmIpc::setupRfds(void)
+ {
+     ENTER();
+ 
+-    m_maxFd = m_signalPipeRead;
+-
+     FD_ZERO(&m_rfds);
+     FD_SET(m_signalPipeRead, &m_rfds);
++    DEBUG("Added fd = %d to rfds\n", m_signalPipeRead);
++    FD_SET(m_signalIntfUpdate, &m_rfds);
++    DEBUG("Added fd = %d to rfds\n", m_signalIntfUpdate);
+ 
+-    //TODO: go through our intfs list and build up the rfds of fds to wait for
+-    for (auto iter = m_intfs.begin();
+-              iter != m_intfs.end();
+-              iter++) {
+-        FD_SET(iter->fd, &m_rfds);
+-
+-        //TODO: figure out what the highest/largest fd is and set it +1 to m_highestFd
+-        /* check if this is the newest high fd */
+-        if (iter->fd > m_maxFd) {
+-            m_maxFd = iter->fd;
+-        }
++    if( m_signalPipeRead > m_signalIntfUpdate) {
++        m_maxFd = m_signalPipeRead;
++    } else {
++        m_maxFd = m_signalIntfUpdate;
+     }
++    DEBUG("Max_FD set to - %d\n", m_maxFd);
+ 
+     EXIT();
+ } /* VnmIpc::setupRfds() */
+@@ -224,34 +260,26 @@ void VnmIpc::handleFdsReady(void)
+     /* first check if our pipe has anything */
+     if (FD_ISSET(m_signalPipeRead, &m_rfds)) {
+         DEBUG("Data is ready on readPipe\n");
+-        //processVmnIPcall()
++        selectVnmCall();
++
++        //TODO: read is not immediatly clearing the FD - select is called 2-3 times after
++        //the clear
+         rc = read(m_signalPipeRead, (void *)(&buf), sizeof(buf));
+         if (rc < 0) {
+             ERROR("Failed to read from wake-up pipe - %s\n", strerror(errno));
+         } else {
+             DEBUG("Successfully cleared the wake-up pipe - %d\n", buf);
+         }
+-        //FD_CLR(m_signalPipeRead, &m_rfds);
+-    }
+-
+-    /* loop through our monitored Interface fds and see if they have data *
+-    for (std::list<fdObj_t>::iterator it = m_fdsMonitored.begin();
+-         it != m_fdsMonitored.end();
+-         it++) {
+-
+-        * only check if they have been added to our rfds *
+-        if ((it)->fdSet) {
+-            if (FD_ISSET((it)->fd, &m_rfds)) {
+-                DEBUG("Data is ready on fd = %d calling CB\n", (it)->fd);
+-                (it)->readCb();
+-            } else {
+-                DEBUG("No data is ready on fd = %d\n", (it)->fd);
+-            } * if (FD_ISSET(... *
++    } else if (FD_ISSET(m_signalIntfUpdate, &m_rfds)) {
++        DEBUG("Data is ready on IntfUpdate\n");
++        checkIntfIpAddress();
++        rc = read(m_signalIntfUpdate, (void *)(&buf), sizeof(buf));
++        if (rc < 0) {
++            ERROR("Failed to read from IntfUpdate pipe - %s\n", strerror(errno));
+         } else {
+-            DEBUG("Was not looking for fd = %d\n", (it)->fd);
+-        } * if ((it)->fdSet) *
++            DEBUG("Successfully cleared the IntfUpdate pipe - %d\n", buf);
++        }
+     }
+-*/
+ 
+     EXIT();
+     return;
+@@ -266,7 +294,6 @@ bool VnmIpc::signalVnmIpc(void)
+ 
+     ENTER();
+ 
+-    //TODO: write to the pipe to wake up the main thread
+     ret = write(m_signalPipeWrite, &buf, sizeof(WRITE_TO_FD));
+     if (ret < 0) {
+         ERROR("Failed to write to wake-up pipe\n");
+@@ -295,28 +322,30 @@ void VnmIpc::handlePipeRead()
+ bool VnmIpc::clearIpv4(const char *intf)
+ {
+     bool rc = false;
++    VnmIpcReq_t vnmRequest;
++    std::string intString(intf);
+ 
+     ENTER();
+ 
+-    // create a new vnmIpcReq_t to clear for the interface request
++    INFO("Received clear IPv4 request, queuing request\n");
++
++    vnmRequest.intf = intString;
++    vnmRequest.type = VnmIpcReqType::ClearIpv4;
++    vnmRequest.ipv4Type = Ipv4AddrType::None;
++    vnmRequest.ipv6Type = Ipv6AddrType::None;
++
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
+ 
+-    // add it to the queue
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
+ 
+-    // signal vnm_ipc that there is a new request
+     rc = signalVnmIpc();
+-    if (rc == false) {
+-        ERROR("Failed to signal vnm_ipc of our request!\n");
+-        // TODO: this is a major failure...need to do more here
+-        rc = false;
+-        goto LEAVE;
+-    } else {
+-        DEBUG("Successfully signaled vnm_ipc of our request!\n");
+-    }
++    //error checking
+ 
+-    INFO("Successfully cleared the ipv4 addr on intf = %s\n", intf);
+     rc = true;
+ 
+-LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::clearIpv4() */
+@@ -328,45 +357,28 @@ bool VnmIpc::requestStaticIpv4(const char *intf, ipv4Addr_t &addr)
+     VnmIpcReq_t vnmRequest;
+     std::string intString(intf);
+ 
+-
+     ENTER();
+ 
+-    //pack include request information to que for mainloop
+-    DEBUG("Adding VNM Request information to vnmRequest\n");
++    INFO("Received Static IPv4 request, queuing request\n");
++
+     vnmRequest.intf = intString;
+-    DEBUG("Adding VNM Request information to vnmRequest\n");
+     vnmRequest.type = VnmIpcReqType::RequestStaticIpv4;
+-    DEBUG("Adding VNM Request information to vnmRequest\n");
+     vnmRequest.ipv4Type = Ipv4AddrType::Static;
+-    DEBUG("Adding VNM Request information to vnmRequest\n");
+     vnmRequest.ipv4.staticAddr = addr;
+-    DEBUG("Adding VNM Request information to vnmRequest\n");
+     vnmRequest.ipv6Type = Ipv6AddrType::None;
+ 
+-    DEBUG("Adding VNM Request information to vnmRequest\n");
+-    //lock the mutux for this queue so that the otehr thread doesnt fuck with it
+-    m_reqsQ.push_back(vnmRequest);
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
+ 
+-    rc = checkIntfList(intf);
+-    //error checking
+     rc = signalVnmIpc();
+     //error checking
+ 
+-/*
+-    m_vnmIpcRetCode = m_vnmIpcInstance.setStaticIpAddress(intf, addr.ip);
+-    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+-        ERROR("Failed to set static ipv4 address using vnm_ipc\n");
+-        rc = false;
+-        goto LEAVE;
+-    }
+-*/    // TODO: add the interface to our montior list so that we know when addr changes
+-
+-    // TODO add proper printing of the values just set
+-    INFO("Successfully set static ipv4 addr (ip = %s/netmask/gw/dns) on intf = %s\n",
+-            addr.ip, intf);
+     rc = true;
+ 
+-//LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::requestStaticIpv4() */
+@@ -375,70 +387,80 @@ bool VnmIpc::requestStaticIpv4(const char *intf, ipv4Addr_t &addr)
+ bool VnmIpc::requestDhcpClient(const char *intf)
+ {
+     bool rc = false;
++    VnmIpcReq_t vnmRequest;
++    std::string intString(intf);
+ 
+     ENTER();
+ 
+-    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpClientMode(intf);
+-    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+-        ERROR("Failed to enable DHCP Client Mode for vnm_ipc\n");
+-        rc = false;
+-        goto LEAVE;
+-    }
+-    // TODO: add the interface to our montior list so that we know when addr changes
++    INFO("Received DHCP Client request, queuing request\n");
+ 
+-    INFO("Successfully requested DHCP Client on intf = %s\n", intf);
+-    rc = true;
++    vnmRequest.intf = intString;
++    vnmRequest.type = VnmIpcReqType::RequestDhcpClient;
++    vnmRequest.ipv4Type = Ipv4AddrType::None;
++    vnmRequest.ipv6Type = Ipv6AddrType::None;
++
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
++
++    rc = signalVnmIpc();
++    //TODO: error checking
+ 
+-LEAVE:
+     EXIT();
+     return(rc);
+-} /* VnmIpc::requestStaticIpv4() */
++} /* VnmIpc::requestDhcpClient() */
+ 
+ 
+ bool VnmIpc::requestDhcpServer(const char *intf /* server config */)
+ {
+     bool rc = false;
++    VnmIpcReq_t vnmRequest;
++    std::string intString(intf);
+ 
+     ENTER();
+ 
++    INFO("Received DHCP Server request, queuing request\n");
+ 
+-    // TODO: request tha a dhcp server, using the config specified be started
+-    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpServerMode(intf);
+-    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+-        ERROR("Failed to enable DHCP Server Mode for vnm_ipc\n");
+-        rc = false;
+-        goto LEAVE;
+-    }
+-    // TODO: add the interface to our montior list so that we know when addr changes
++    vnmRequest.intf = intString;
++    vnmRequest.type = VnmIpcReqType::RequestDhcpServer;
++    //TODO: update request with Server Config info
++    vnmRequest.ipv4Type = Ipv4AddrType::None;
++    vnmRequest.ipv6Type = Ipv6AddrType::None;
+ 
+-    INFO("Successfully requested DHCP Server (ip/netmask/gw/dns/etc) on intf = %s\n",
+-            intf);
+-    rc = true;
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
++
++    rc = signalVnmIpc();
++    //TODO: error checking
+ 
+-LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::requestDhcpServer() */
+ 
+-bool VnmIpc::checkIntfList(const char *intf)
++bool VnmIpc::checkIntfList(std::string intf)
+ {
+     bool rc = false;
+     VnmIpcIntf_t intfToAdd;
+-    std::string intfString = intf;
+ 
+     ENTER();
+ 
+     intfToAdd.intf = intf;
+-    intfToAdd.fd = socket(AF_INET, SOCK_DGRAM, 0);
+ 
+     if (m_intfs.empty()){
+-        DEBUG("Interface List was empty, adding interface\n");
++        DEBUG("Interface List was empty, adding interface - %s\n",intf.c_str());
+         m_intfs.push_back(intfToAdd);
+     } else {
+         for (auto iter = m_intfs.begin();
+                   iter != m_intfs.end();
+                   iter++) {
+-            if (strncmp(iter->intf.c_str(),intfString.c_str(),intfString.length()) == 0) {
++            if (strncmp(iter->intf.c_str(),intf.c_str(),intf.length()) == 0) {
+                 DEBUG("Interface fd already present in list\n");
+                 break;
+             } /* if */
+@@ -448,9 +470,226 @@ bool VnmIpc::checkIntfList(const char *intf)
+     }
+ 
+     rc = true;
++
+     EXIT();
+     return(rc);
+ } /* VnmIpc::findIntfFd() */
++
++
++bool VnmIpc::selectVnmCall()
++{
++    bool rc = false;
++    VnmIpcReq_t vnmRequest;
++
++    ENTER();
++    DEBUG("in select\n");
++
++    { /* m_qMutex */
++        /* lock the mutex for checking the Top request Type */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        if(m_reqsQ.empty()) {
++            ERROR("nothing in the queue\n");
++            rc = false;
++            goto LEAVE;
++        } else {
++            vnmRequest = m_reqsQ.front();
++            m_reqsQ.pop_front();
++        }
++    } /* m_qMutex */
++
++    switch (vnmRequest.type) {
++    case (VnmIpcReqType::ClearIpv4):
++        rc = handleClearIpv4(vnmRequest);
++        break;
++    case (VnmIpcReqType::RequestStaticIpv4):
++        rc = handleRequestStaticIpv4(vnmRequest);
++        break;
++    case (VnmIpcReqType::RequestDhcpClient):
++        rc = handleRequestDhcpClient(vnmRequest);
++        break;
++    case (VnmIpcReqType::RequestDhcpServer):
++        rc = handleRequestDhcpServer(vnmRequest);
++        break;
++    default:
++        ERROR("unknown Vnm_ipc request Type\n");
++        rc = false;
++        break;
++    }
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::selectVnmCall() */
++
++
++bool VnmIpc::handleClearIpv4(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++
++    ENTER();
++
++    INFO("handling vnm_ipc clearIpv4() request\n");
++    checkIntfList(vnmRequest.intf);
++
++    m_vnmIpcRetCode = m_vnmIpcInstance.clearIpAddress(vnmRequest.intf);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to clear Ip Address using vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleClearIpv4() */
++
++
++bool VnmIpc::handleRequestDhcpClient(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++
++    ENTER();
++
++    INFO("handling vnm_ipc requestDhcpClient() request\n");
++    checkIntfList(vnmRequest.intf);
++
++    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpClientMode(vnmRequest.intf);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to enable dhcp client using vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
++
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleRequestDhcpClient() */
++
++
++bool VnmIpc::handleRequestStaticIpv4(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++    std::string ipAddr("192.168.1.1");
++
++    ENTER();
++
++    INFO("handling vnm_ipc requestStaticIpv4() request\n");
++    checkIntfList(vnmRequest.intf);
++
++    //TODO: Pull the ip address out of vnmRequest and set to ipAddr string
++
++    m_vnmIpcRetCode = m_vnmIpcInstance.setStaticIpAddress(vnmRequest.intf, ipAddr);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to set %s with Static Ip %s using vnm_ipc\n",
++              vnmRequest.intf.c_str(), ipAddr.c_str());
++        rc = false;
++        goto LEAVE;
++    }
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleRequestStaticIpv4() */
++
++
++bool VnmIpc::handleRequestDhcpServer(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++
++    ENTER();
++
++    WARN("DHCP Server requests currenly not supported\n");
++    //INFO("calling into vnm_ipc RequestDhcpServer()\n");
++    checkIntfList(vnmRequest.intf);
++
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleRequestDhcpServer() */
++
++
++bool VnmIpc::checkIntfIpAddress()
++{
++    bool rc = false;
++    WlanContext_t *ctx = NULL;
++    WlanAction* new_action = NULL;
++    struct nlmsghdr *nlh = NULL;
++    char buf[4096];
++    int ret = 0;
++    struct ifaddrmsg *ifa = NULL;
++    struct rtattr *rth = NULL;
++    char intName[IFNAMSIZ];
++    uint32_t ipAddrRaw = 0;
++    char ipAddrString[WLAN_IP_LEN];
++    struct sockaddr_in sa;
++
++    ENTER();
++
++    ctx = (WlanContext_t *)m_globalCtx;
++
++    nlh = (struct nlmsghdr *)buf;
++    ret = recv(m_signalIntfUpdate, nlh, 4096, 0);
++    if (ret < 0) {
++        ERROR("Failed to read from recv for m_signalIntfUpdate\n");
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG(" Successfully read from recv for m_signalIntfUpdate\n");
++    }
++
++    ifa = (struct ifaddrmsg *) NLMSG_DATA(nlh);
++    rth = IFA_RTA(ifa);
++    ipAddrRaw = htonl(*((uint32_t *)RTA_DATA(rth)));
++
++    if_indextoname(ifa->ifa_index, intName);
++
++    sprintf(ipAddrString,"%d.%d.%d.%d", (ipAddrRaw >> 24) & 0xff,
++                                        (ipAddrRaw >> 16) & 0xff,
++                                        (ipAddrRaw >> 8) & 0xff,
++                                         ipAddrRaw & 0xff);
++
++
++    DEBUG("Interface name is %s\n", intName);
++
++    for (auto iter = m_intfs.begin();
++              iter != m_intfs.end();
++              iter++) {
++        if (strncmp(iter->intf.c_str(),intName,iter->intf.length()) == 0) {
++            DEBUG("There was a change to an Interface we are monitoring - %s\n", iter->intf.c_str());
++            if (iter->hasIpAddr == false) {
++                DEBUG("%s currently does not have an IP addr, checking if one is assigned\n",
++                        iter->intf.c_str());
++                if (inet_pton(AF_INET, ipAddrString, &(sa.sin_addr)) > 0) {
++                    DEBUG("%s was assiged ip address of %s\n", iter->intf.c_str(),ipAddrString);
++                    iter->hasIpAddr = true;
++                    iter->ipAddr = ipAddrString;
++
++                    new_action = new WlanAction {
++                            WlanActionType::WstasTypeIpAddrCmplt,
++                            WlanActionSource::SrcInternal,
++                    };
++                    (ctx->wstas)->queueAction(new_action);
++                }
++                //TODO: check for IP and send action
++            } else {
++                DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
++            }
++            break;
++        } /* if */
++    } /* for() */
++
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::checkIntfIpAddress() */
+ /******************************************************************************/
+ } /* wlan*/
+ /******************************************************************************/
+diff --git a/service/vnm_ipc/vnm_ipc.hpp b/service/vnm_ipc/vnm_ipc.hpp
+index 30ac460..90c2e28 100644
+--- a/service/vnm_ipc/vnm_ipc.hpp
++++ b/service/vnm_ipc/vnm_ipc.hpp
+@@ -28,6 +28,8 @@ namespace wlan {
+ /* DEFINES ********************************************************************/
+ typedef struct VnmIpcIntf {
+     std::string     intf;
++    bool hasIpAddr = false;
++    std::string   ipAddr;
+ } VnmIpcIntf_t;
+ 
+ 
+@@ -36,10 +38,9 @@ enum class VnmIpcReqType
+     Min = 0,
+     Add,
+     ClearIpv4,
+-    RequestIpv4,
+     RequestStaticIpv4,
+-    RequestDhcpClient,
+     RequestDhcpServer,
++    RequestDhcpClient,
+     Max
+ };
+ 
+@@ -112,6 +113,7 @@ class VnmIpc
+         /* pipe for signalling when we put something in the queue */
+         int m_signalPipeRead;
+         int m_signalPipeWrite;
++        int m_signalIntfUpdate;
+ 
+         /* stuff for select loop */
+         fd_set m_rfds;
+@@ -148,7 +150,23 @@ class VnmIpc
+          * and adds it to the list if not, keep track of the fd associated with that 
+          * interface.
+          */
+-        bool checkIntfList(const char *intf);
++        bool checkIntfList(std::string intf);
++
++        /*
++         * function that checks the type of VNM request we have received and call the
++         * approtiate handleVNM() function
++         */
++        bool selectVnmCall(void);
++
++        bool handleClearIpv4(VnmIpcReq_t vnmRequest);
++        bool handleRequestStaticIpv4(VnmIpcReq_t vnmRequest);
++        bool handleRequestDhcpClient(VnmIpcReq_t vnmRequest);
++        bool handleRequestDhcpServer(VnmIpcReq_t vnmRequest);
++
++        int getIntfUpdateFd(void);
++        bool checkIntfIpAddress(void);
++
++
+ };
+ /******************************************************************************/
+ } /* wlan */
+diff --git a/service/wstas/wstas.cpp b/service/wstas/wstas.cpp
+index 32dd49d..eb66c11 100644
+--- a/service/wstas/wstas.cpp
++++ b/service/wstas/wstas.cpp
+@@ -1259,7 +1259,7 @@ int Wstas::handleEventAuthenticated(WlanAction* action)
+ {
+     WlanContext_t *ctx = NULL;
+     WlanProfile_t* profile = NULL;
+-    WlanAction* new_action = NULL;
++    //WlanAction* new_action = NULL;
+     int rc = 0;
+ 
+     ENTER();
+@@ -1322,13 +1322,13 @@ int Wstas::handleEventAuthenticated(WlanAction* action)
+      * Eventually this action will be received on another
+      * IPC mechanism originating from VNM - for now create
+      * and queue it internally.
+-     */
++     *
+     new_action = new WlanAction {
+             WlanActionType::WstasTypeIpAddrCmplt,
+             WlanActionSource::SrcInternal,
+     };
+     queueAction(new_action);
+-
++    */
+     /* Clean-up */
+     if (profile) {
+         delete(profile);

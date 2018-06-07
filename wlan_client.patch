@@ -1,0 +1,437 @@
+commit 44379382f68ee9ce6246d844f5bf62ae086bad09
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Thu May 10 17:02:02 2018 -0400
+
+    Fixed bugs in wlan_client, connection process args
+    
+    TCU-5725 wlan_client cannot connect with encrypted WiFi networks
+    
+    -Corrected a strlen of a NULL variable that was causing a
+    copy of size 0, thus setting the password to NULL
+    -Also updated all of wlan_client sta connection to make it
+    hopefully more robust
+    -Updated each option with more prints
+    
+    Testing:
+    -Now able to connect wlan_service to encrpyted networks
+    -Ran each option flag with various correct and incorrect arguments
+    
+    	modified:   client/sta/role_sta.cpp
+
+diff --git a/client/sta/role_sta.cpp b/client/sta/role_sta.cpp
+index 2b435c3..c4052d7 100755
+--- a/client/sta/role_sta.cpp
++++ b/client/sta/role_sta.cpp
+@@ -714,20 +714,18 @@ static bool handleStaConnectionOption(int argc, char** argv) {
+         switch (c) {
+         case 'a' : {
+             // for connection option: SSID
+-            if ((strlen(optarg) > 0) && (strlen(optarg) < WLAN_SSID_LEN )) {
+-                strcpy(g_connProfile.ssid, optarg);
+-                g_connProfile.ssid[sizeof(g_connProfile.ssid) - 1] = '\0';
+ 
+-            } else {
+-                if (strlen(optarg) <= 0) {
+-                    ERROR("Invalid option - entered SSID is too short ");
+-                } else if (strlen(optarg) > WLAN_SSID_LEN ) {
+-                    ERROR("Invalid option - entered SSID is too long ");
+-                }
++            //WLAN_SSID_LEN includes the NULL terminator so check for n-1
++            if ((strlen(optarg) > 0) && (strlen(optarg) < WLAN_SSID_LEN - 1)) {
++                strncpy(g_connProfile.ssid, optarg, sizeof(g_connProfile.ssid));
++                g_connProfile.ssid[sizeof(g_connProfile.ssid) - 1] = '\0';
++            } else if (strlen(optarg) > WLAN_SSID_LEN - 1) {
++                ERROR("Invalid option - entered SSID is too long\n");
+                 ERROR("entered SSID is \"%s\"\n", optarg);
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("SSID set to: %s\n", g_connProfile.ssid);
+             break;
+         }
+         case 'b' : {
+@@ -788,25 +786,25 @@ static bool handleStaConnectionOption(int argc, char** argv) {
+                     goto LEAVE;
+                 }
+                 g_connProfile.sec.wps.type = WpsType::Pin;
+-                strncpy(g_connProfile.sec.wps.pin, optarg, strlen(optarg));
++                strncpy(g_connProfile.sec.wps.pin, optarg, sizeof(g_connProfile.sec.wps.pin));
+             } else {
+                 ERROR("-c option is for WPS only\n");
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("WPS PIN has been set\n");
+             break;
+         }
+         case 'f' :
+             // for optional connection option: channel
+-
+             if (strncasecmp(optarg, "ALL", sizeof("ALL")) == 0) {
+                 INFO("Scan configured to scan All channels\n");
+                 g_connProfile.channel = Channel::All;
+-                goto LEAVE;
++                break;
+             } else if (strncasecmp(optarg, "ANY", sizeof("ANY")) == 0) {
+                 INFO("Scan configured to scan Any channels\n");
+                 g_connProfile.channel = Channel::Any;
+-                goto LEAVE;
++                break;
+             }
+ 
+             chan = intToChannel(std::stoi(optarg, NULL));
+@@ -819,64 +817,74 @@ static bool handleStaConnectionOption(int argc, char** argv) {
+         case 'g' : {
+             // for connection option: gateway
+             if (g_connProfile.ipv4AddrType != Ipv4AddrType::Static) {
+-                INFO("Please select the Static IP addressing option to specify Gateway address\n");
++                ERROR("Please select the Static IP addressing option to specify Gateway address\n");
+                 ret = false;
+                 goto LEAVE;
+             }
+ 
+             if (!ss.str().empty() && ss.str().find_first_not_of("0123456789.") == std::string::npos) {
+                 count = 0;
+-                
+                 while(std::getline(ss, substr, '.')) {
+-                    if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
+-                        ERROR("IP value must be between 0 and 255\n");
++                    if (!substr.empty()) {
++                        if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
++                            ERROR("IP value must be between 0 and 255\n");
++                            ret = false;
++                            goto LEAVE;
++                        }
++                        count++;
++                    } else {
++                        ERROR("Invalid IP address format provided\n");
+                         ret = false;
+                         goto LEAVE;
+                     }
+-                    count++;
+                 }
+                 if (count != 4) {
+                     ERROR("Invalid IP address format provided\n");
+                     ret = false;
+                     goto LEAVE;
+                 }
+-                strncpy(g_connProfile.ipv4.staticIpv4.gateway, optarg, strlen(g_connProfile.ipv4.staticIpv4.gateway));
++                strncpy(g_connProfile.ipv4.staticIpv4.gateway, optarg, sizeof(g_connProfile.ipv4.staticIpv4.gateway));
+                 g_connProfile.ipv4.staticIpv4.gateway[sizeof(g_connProfile.ipv4.staticIpv4.gateway) - 1] = '\0';
+-
+             } else {
+                 ERROR("No IP received: %s\n", optarg);
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("Gateway has been set to: %s\n", g_connProfile.ipv4.staticIpv4.gateway);
+             break;
+         }
+         case 'i' : {
+             // for connection option: DHCP or IP addr
+             // This assumes that option -i comes before option -g
+             count = 0;
+-            
++
+             if (strncasecmp(optarg, "dhcp", strlen("dhcp")) == 0) {
+                 g_connProfile.ipv4AddrType = Ipv4AddrType::DhcpClient;
+                 INFO("using DHCP client \n");
+             } else if (ss.str().find_first_not_of("0123456789.") == std::string::npos) {
+-                 while(std::getline(ss, substr, '.')) {
+-                    if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
+-                        ERROR("IP value must be between 0 and 255\n");
++                while(std::getline(ss, substr, '.')) {
++                    if (!substr.empty()) {
++                        if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
++                            ERROR("IP value must be between 0 and 255\n");
++                            ret = false;
++                            goto LEAVE;
++                        }
++                        count++;
++                    } else {
++                        ERROR("Invalid IP address format provided\n");
+                         ret = false;
+                         goto LEAVE;
+                     }
+-                    count++;
+                 }
+                 if (count != 4) {
+                     ERROR("Invalid IP address format provided\n");
+                     ret = false;
+                     goto LEAVE;
+                 }
+-                strncpy(g_connProfile.ipv4.staticIpv4.ip , optarg, strlen(g_connProfile.ipv4.staticIpv4.ip));
++                strncpy(g_connProfile.ipv4.staticIpv4.ip , optarg, sizeof(g_connProfile.ipv4.staticIpv4.ip));
+                 g_connProfile.ipv4.staticIpv4.ip[sizeof(g_connProfile.ipv4.staticIpv4.ip) - 1] = '\0';
+                 g_connProfile.ipv4AddrType = Ipv4AddrType::Static;
+                 INFO("using static IP address %s \n",g_connProfile.ipv4.staticIpv4.ip);
+-
+             } else {
+                 ERROR("Invalid argument %s: use dhcp or IP address\n", optarg);
+                 ret = false;
+@@ -888,14 +896,13 @@ static bool handleStaConnectionOption(int argc, char** argv) {
+             // for optional connection option: BSSID
+             count = 0;
+ 
+-            if (!(ss.str().empty()) && (ss.str().length() + 1 == WLAN_MAC_LEN)) {
++            //WLAN_MAC_LEN includes the NULL terminator so check for n-1
++            if (!(ss.str().empty()) && (ss.str().length() == WLAN_MAC_LEN - 1)) {
+                 while(std::getline(ss, substr, ':')) {
+-                    if ( substr.size() > 2
+-                        || substr.find_first_not_of("0123456789abcdefABCDEF", 2) != std::string::npos
+-                        || substr.find_last_not_of("0123456789abcdefABCDEF", 2) != std::string::npos
+-                    ) {
+-                        ERROR("Enter MAC value between 0x00 and 0xFF "
+-                            "Correct format: 12:34:56:78:90:AB\n");
++                    if ( substr.size() != 2
++                        || substr.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
++                        ERROR("Invalid MAC Address - Enter MAC value between 0x00 and 0xFF "
++                              "Correct format: 12:34:56:78:90:AB\n");
+                         ret = false;
+                         goto LEAVE;
+                     }
+@@ -907,7 +914,7 @@ static bool handleStaConnectionOption(int argc, char** argv) {
+                     ret = false;
+                     goto LEAVE;
+                 }
+-                ss.str().copy(g_connProfile.bssid, WLAN_MAC_LEN);
++                strncpy(g_connProfile.bssid, optarg, sizeof(g_connProfile.bssid));
+                 g_connProfile.bssid[sizeof(g_connProfile.bssid) - 1] = '\0';
+             } else {
+                 ERROR("Provided MAC address too short or too long.. "
+@@ -915,99 +922,113 @@ static bool handleStaConnectionOption(int argc, char** argv) {
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("BSSID set to: %s\n", g_connProfile.bssid);
+             break;
+         }
+         case 'n' : {
+             // for connection option: Netmask
+ 
+             if (g_connProfile.ipv4AddrType != Ipv4AddrType::Static) {
+-                INFO("Please add the static IP address to specify netmask\n");
++                ERROR("Please add the static IP address to set a netmask or use DHCP\n");
+                 ret = false;
+                 goto LEAVE;
+             }
+ 
+-            if (!ss.str().empty() && ss.str().find_first_not_of("0123456789.") == std::string::npos) {
+-                std::string substr;
++            if (!(ss.str().empty()) && (ss.str().find_first_not_of("0123456789.") == std::string::npos)) {
+                 count = 0;
+                 while(std::getline(ss, substr, '.')) {
+-                    if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
+-                        ERROR("IP value must be between 0 and 255\n");
++                    if (!substr.empty()) {
++                        if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
++                            ERROR("Netmask value must be between 0 and 255\n");
++                            ret = false;
++                            goto LEAVE;
++                        }
++                        count++;
++                    } else {
++                        ERROR("Invalid Netmask address format provided\n");
++                        ret = false;
++                        goto LEAVE;
+                     }
+-                    count++;
+                 }
+                 if (count != 4) {
+-                    ERROR("Invalid IP address format provided\n");
++                    ERROR("Invalid Netmask address format provided\n");
+                     ret = false;
+                     goto LEAVE;
+                 }
+-                strncpy(g_connProfile.ipv4.staticIpv4.netmask, optarg, strlen(g_connProfile.ipv4.staticIpv4.netmask));
++                strncpy(g_connProfile.ipv4.staticIpv4.netmask, optarg, sizeof(g_connProfile.ipv4.staticIpv4.netmask));
+                 g_connProfile.ipv4.staticIpv4.netmask[sizeof(g_connProfile.ipv4.staticIpv4.netmask) - 1] = '\0';
+             } else {
+-                ERROR("No IP address provided\n");
++                ERROR("No Netmask was provided\n");
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("Netmask set to: %s\n", g_connProfile.ipv4.staticIpv4.netmask);
+             break;
+         }
+         case 'p' : {
+             // for connection option: wpa/wpa2 password
+             if ((strlen(optarg) != 0) && (strlen(optarg) >= MIN_WPA_PASS_LEN ) &&
+                     (strlen(optarg) <= MAX_WPA_PASS_LEN )) {
+-                strncpy(g_connProfile.sec.wpaPsk.password, optarg, strlen(g_connProfile.sec.wpaPsk.password));
++                strncpy(g_connProfile.sec.wpaPsk.password, optarg, sizeof(g_connProfile.sec.wpaPsk.password));
+                 g_connProfile.sec.wpaPsk.password[sizeof(g_connProfile.sec.wpaPsk.password) - 1] = '\0';
+             } else {
+                 ERROR("Invalid option - password too long or empty\n");
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("WPA/WPA2 passphrase has been set\n");
+             break;
+         }
+         case 'q' : {
+             // for connection option: wep key 0
+             if ((strlen(optarg) != 0) && (strlen(optarg) <= MAX_WEP_KEY_LEN )) {
+-                strncpy(g_connProfile.sec.wep.key[0], optarg, strlen(g_connProfile.sec.wep.key[0]));
+-                g_connProfile.sec.wep.key[0][sizeof(g_connProfile.sec.wep.key[0]) - 1] = '\0';
++                strncpy(g_connProfile.sec.wep.key[0], optarg, sizeof(g_connProfile.sec.wep.key[0]));
++                //WEP key is not a c-string, do not need to add NULL Terminator
+             } else {
+                 ERROR("Invalid option - WEP key 0 too long or empty\n");
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("WEP key 0 has been set\n");
+             break;
+         }
+         case 'r' : {
+             // for connection option: wep key 1
+             if ((strlen(optarg) != 0) && (strlen(optarg) <= MAX_WEP_KEY_LEN )) {
+-                strncpy(g_connProfile.sec.wep.key[1], optarg, strlen(g_connProfile.sec.wep.key[1]));
+-                g_connProfile.sec.wep.key[1][sizeof(g_connProfile.sec.wep.key[1]) - 1] = '\0';
++                strncpy(g_connProfile.sec.wep.key[1], optarg, sizeof(g_connProfile.sec.wep.key[1]));
++                //WEP key is not a c-string, do not need to add NULL Terminator
+             } else {
+                 ERROR("Invalid option - WEP key 1 too long or empty\n");
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("WEP key 1 has been set\n");
+             break;
+         }
+         case 's' : {
+             // for connection option: wep key 2
+             if ((strlen(optarg) != 0) && (strlen(optarg) <= MAX_WEP_KEY_LEN )) {
+-                strncpy(g_connProfile.sec.wep.key[2], optarg, strlen(g_connProfile.sec.wep.key[2]));
+-                g_connProfile.sec.wep.key[2][sizeof(g_connProfile.sec.wep.key[2]) - 1] = '\0';
++                strncpy(g_connProfile.sec.wep.key[2], optarg, sizeof(g_connProfile.sec.wep.key[2]));
++                //WEP key is not a c-string, do not need to add NULL Terminator
+             } else {
+                 ERROR("Invalid option - WEP key 2 too long or empty\n");
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("WEP key 2 has been set\n");
+             break;
+         }
+         case 't' : {
+             // for connection option: wep key 3
+             if ((strlen(optarg) != 0) && (strlen(optarg) <= MAX_WEP_KEY_LEN )) {
+-                strncpy(g_connProfile.sec.wep.key[3], optarg, strlen(g_connProfile.sec.wep.key[3]));
+-                g_connProfile.sec.wep.key[3][sizeof(g_connProfile.sec.wep.key[3]) - 1] = '\0';
++                strncpy(g_connProfile.sec.wep.key[3], optarg, sizeof(g_connProfile.sec.wep.key[3]));
++                //WEP key is not a c-string, do not need to add NULL Terminator
+             } else {
+                 ERROR("Invalid option - WEP key 3 too long or empty\n");
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("WEP key 3 has been set\n");
+             break;
+         }
+         case 'u' : {
+@@ -1034,74 +1055,87 @@ static bool handleStaConnectionOption(int argc, char** argv) {
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("WEP default key has been set to: %d\n", g_connProfile.sec.wep.defaultKeyIndex);
+             break;
+         }
+         case 'x' : {
+             // for connection option: Preferred DNS
+ 
+             if (g_connProfile.ipv4AddrType != Ipv4AddrType::Static) {
+-                INFO("Please add the static IP address or use DHCP\n");
++                INFO("Please add the static IP address to set DNS or use DHCP\n");
+                 ret = false;
+                 goto LEAVE;
+             }
+ 
+             if (!ss.str().empty() && ss.str().find_first_not_of("0123456789.") == std::string::npos) {
+-                std::string substr;
+                 count = 0;
+                 while(std::getline(ss, substr, '.')) {
+-                    if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
+-                        ERROR("Invalid IP - enter value between 0-255");
++                    if (!substr.empty()) {
++                        if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
++                            ERROR("Invalid DNS - enter value between 0-255\n");
++                            ret = false;
++                            goto LEAVE;
++                        }
++                        count++;
++                    } else {
++                        ERROR("Invalid DNS address format provided\n");
+                         ret = false;
+                         goto LEAVE;
+                     }
+-                    count++;
+                 }
+                 if (count != 4) {
+-                    ERROR("Invalid IP address format provided\n");
++                    ERROR("Invalid DNS address format provided\n");
+                     ret = false;
+                     goto LEAVE;
+                 }
+-                strncpy(g_connProfile.ipv4.staticIpv4.dnsPref, optarg, strlen(g_connProfile.ipv4.staticIpv4.dnsPref));
++                strncpy(g_connProfile.ipv4.staticIpv4.dnsPref, optarg, sizeof(g_connProfile.ipv4.staticIpv4.dnsPref));
+                 g_connProfile.ipv4.staticIpv4.dnsPref[sizeof(g_connProfile.ipv4.staticIpv4.dnsPref) - 1] = '\0';
+             } else {
+-                ERROR("No IP received: %s\n", optarg);
++                ERROR("Invalid DNS received: %s\n", optarg);
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("Preferred DNS has been set to: %s\n", g_connProfile.ipv4.staticIpv4.dnsPref);
+             break;
+         }
+         case 'y' : {
+             // for connection option: Alternate DNS
+ 
+             if (g_connProfile.ipv4AddrType != Ipv4AddrType::Static) {
+-                INFO("Please add the static IP address or use DHCP\n");
++                INFO("Please add the static IP address to set Alternate DNS or use DHCP\n");
+                 ret = false;
+                 goto LEAVE;
+             }
+ 
+             if (!ss.str().empty() && ss.str().find_first_not_of("0123456789.") == std::string::npos) {
+-                std::string substr;
+                 count = 0;
+                 while(std::getline(ss, substr, '.')) {
+-                    if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
+-                        ERROR("Invalid IP - enter value between 0-255");
++                    if (!substr.empty()) {
++                        if (stoi(substr, NULL) < 0 ||  stoi(substr, NULL) > 255) {
++                            ERROR("Invalid DNS - enter value between 0-255\n");
++                            ret = false;
++                            goto LEAVE;
++                        }
++                        count++;
++                    } else {
++                        ERROR("Invalid DNS address format provided\n");
+                         ret = false;
+                         goto LEAVE;
+                     }
+-                    count++;
+                 }
+                 if (count != 4) {
+-                    ERROR("Invalid IP address format provided\n");
++                    ERROR("Invalid DNS address format provided\n");
+                     ret = false;
+                     goto LEAVE;
+                 }
+-                strncpy(g_connProfile.ipv4.staticIpv4.dnsAlt, optarg, strlen(g_connProfile.ipv4.staticIpv4.dnsAlt));
++                strncpy(g_connProfile.ipv4.staticIpv4.dnsAlt, optarg, sizeof(g_connProfile.ipv4.staticIpv4.dnsAlt));
+                 g_connProfile.ipv4.staticIpv4.dnsAlt[sizeof(g_connProfile.ipv4.staticIpv4.dnsAlt) - 1] = '\0';
+             } else {
+-                ERROR("No IP received: %s\n", optarg);
++                ERROR("Invalid DNS received: %s\n", optarg);
+                 ret = false;
+                 goto LEAVE;
+             }
++            INFO("Alternate DNS has been set to: %s\n", g_connProfile.ipv4.staticIpv4.dnsAlt);
+             break;
+         }
+         case ':' : {

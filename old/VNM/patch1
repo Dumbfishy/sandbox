@@ -1,0 +1,236 @@
+commit 789860216173b909ac510bd73863c35cbafa96cb
+Author: khammel <khammel@ford.com>
+Date:   Mon Mar 26 09:32:48 2018 -0400
+
+    adding skelton for vnm_ipc
+
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+new file mode 100644
+index 0000000..0d71f11
+--- /dev/null
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -0,0 +1,156 @@
++/*
++ * CONFIDENTIAL - FORD MOTOR COMPANY
++ *
++ * This is an unpublished work, which is a trade secret, created in
++ * 2017.  Ford Motor Company owns all rights to this work and intends
++ * to maintain it in confidence to preserve its trade secret status.
++ * Ford Motor Company reserves the right to protect this work as an
++ * unpublished copyrighted work in the event of an inadvertent or
++ * deliberate unauthorized publication.  Ford Motor Company also
++ * reserves its rights under the copyright laws to protect this work
++ * as a published work.  Those having access to this work may not copy
++ * it, use it, or disclose the information contained in it without
++ * the written authorization of Ford Motor Company.
++ */
++
++/* INCLUDES *******************************************************************/
++/******************************************************************************/
++
++/* NAMESPACE ******************************************************************/
++namespace wlan {
++/******************************************************************************/
++
++/* DEFINES ********************************************************************/
++// TODO: fill in log tag
++static const char* TAG = "vnm_ipc";
++/* ****************************************************************************/
++
++/* GLOBALS ********************************************************************/
++/******************************************************************************/
++
++/* PROTOTYPES *****************************************************************/
++/******************************************************************************/
++
++/* FUNCTIONS/CLASSES **********************************************************/
++VnmIpc::VnmIpc(void *ctx):
++    m_globalCtx(ctx);
++{
++    ENTER();
++    EXIT();
++} /* VnmIpc::VnmIpc() */
++
++
++VnmIpc::~VnmIpc()
++{
++    ENTER();
++    EXIT();
++} /* VnmIpc::VnmIpc() */
++
++
++bool VnmIpc::start()
++{
++    bool rc = false;
++
++    ENTER();
++
++    // TODO: start resources so that we can monitor for ip address changes on
++    // intf we care about
++
++    INFO("Successfully started vnm_ipc\n");
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::start() */
++
++
++bool VnmIpc::stop()
++{
++    bool rc = false;
++
++    ENTER();
++
++    // TODO: stop any resources we started
++
++    INFO("Successfully stopped vnm_ipc\n");
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::stop() */
++
++
++bool VnmIpc::clearIpv4(const char *intf)()
++{
++    bool rc = false;
++
++    ENTER();
++
++    // TODO: request that all ipv4 addressing on the interface are cleared
++
++    INFO("Successfully cleared the ipv4 addr on intf = %s\n", intf);
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::clearIpv4() */
++
++
++bool VnmIpc::requestStaticIpv4(const char *intf, ipv4Addr_t &addr)()
++{
++    bool rc = false;
++
++    ENTER();
++
++    // TODO: request static IPv4 address on the interface
++    // TODO: add the interface to our montior list so that we know when addr changes
++
++    // TODO add proper printing of the values just set
++    INFO("Successfully set static ipv4 addr (ip/netmask/gw/dns) on intf = %s\n",
++            intf);
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::requestStaticIpv4() */
++
++
++bool VnmIpc::requestDhcpClient(const char *intf)()
++{
++    bool rc = false;
++
++    ENTER();
++
++    // TODO: request that a dhcp client is started
++    // TODO: add the interface to our montior list so that we know when addr changes
++
++    INFO("Successfully requested DHCP Client on intf = %s\n", intf);
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::requestStaticIpv4() */
++
++
++bool VnmIpc::requestDhcpServer(const char *intf /* server config */)()
++{
++    bool rc = false;
++
++    ENTER();
++
++    // TODO: request tha a dhcp server, using the config specified be started
++    // TODO: add the interface to our montior list so that we know when addr changes
++
++    INFO("Successfully requested DHCP Server (ip/netmask/gw/dns/etc) on intf = %s\n",
++            intf);
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::requestDhcpServer() */
++
++/******************************************************************************/
++} /* wlan*/
++/******************************************************************************/
++/* EOF */
++
+diff --git a/service/vnm_ipc/vnm_ipc.hpp b/service/vnm_ipc/vnm_ipc.hpp
+new file mode 100644
+index 0000000..bb90033
+--- /dev/null
++++ b/service/vnm_ipc/vnm_ipc.hpp
+@@ -0,0 +1,62 @@
++/*
++ * CONFIDENTIAL - FORD MOTOR COMPANY
++ *
++ * This is an unpublished work, which is a trade secret, created in
++ * 2017.  Ford Motor Company owns all rights to this work and intends
++ * to maintain it in confidence to preserve its trade secret status.
++ * Ford Motor Company reserves the right to protect this work as an
++ * unpublished copyrighted work in the event of an inadvertent or
++ * deliberate unauthorized publication.  Ford Motor Company also
++ * reserves its rights under the copyright laws to protect this work
++ * as a published work.  Those having access to this work may not copy
++ * it, use it, or disclose the information contained in it without
++ * the written authorization of Ford Motor Company.
++ */
++
++#ifndef WLAN_SRV_VNM_IPC_HPP
++#define WLAN_SRV_VNM_IPC_HPP
++
++/* INCLUDES *******************************************************************/
++#include "wlan_data_types.hpp";
++/******************************************************************************/
++
++/* NAMESPACE ******************************************************************/
++namespace wlan {
++/******************************************************************************/
++
++/* DEFINES ********************************************************************/
++/* ****************************************************************************/
++
++/* GLOBALS ********************************************************************/
++/******************************************************************************/
++
++/* PROTOTYPES *****************************************************************/
++class VnmIpc
++{
++    public:
++        VnmIpc(void *ctx);
++        virtual ~VnmIpc();
++
++        bool start();
++        bool stop();
++
++        /* IPv4 stuff */
++        bool clearIpv4(const char *intf);
++        bool requestStaticIpv4(const char *intf, ipv4Addr_t &addr);
++        bool requestDhcpClient(const char *intf);
++        bool requestDhcpServer(const char *intf /*, server config */);
++
++        /* IPv6 stuff */
++
++    private:
++        VnmIpc(const VnmIpc &) = delete;
++        VnmIpc & operator=(const VnmIpc &) = delete;
++
++        void *m_globalCtx;
++};
++/******************************************************************************/
++} /* wlan */
++#endif /* WLAN_SRV_VNM_IPC_HPP */
++/******************************************************************************/
++/* EOF */
++

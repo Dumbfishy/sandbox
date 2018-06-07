@@ -1,0 +1,137 @@
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 6a2176c..6dec894 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -620,6 +596,86 @@ bool VnmIpc::checkIntfIpAddress()
+     bool rc = false;
+     WlanContext_t *ctx = NULL;
+     WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
++    char buf[4096];
++    int ret = 0;
++    struct ifaddrs *ifaddr = NULL;
++    struct ifaddrs *ifa = NULL;
++    char *ipAddrString;
++    //std::string ipAddrString;
++    struct sockaddr_in *sockAddr;
++
++    ENTER();
++
++    ctx = (WlanContext_t *)m_globalCtx;
++    //nlh = (struct nlmsghdr *)buf;
++    ipAddrUpdate = new WlanIpAddrUpdate_t();
++
++    ret = recv(m_signalIntfUpdate, buf, 4096, 0);
++    if (ret < 0) {
++        ERROR("Failed to read from recv for m_signalIntfUpdate\n");
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully cleared recv for m_signalIntfUpdate\n");
++    }
++
++    ret = getifaddrs(&ifaddr);
++    if (ret == -1) {
++        ERROR("failed to get interfaces info - %s\n", strerror(errno));
++        goto LEAVE;
++    }
++
++    /* check that the Interface changed is one we are monitoring and update accordingly if yes */
++    for (auto iter = m_intfs.begin(); iter != m_intfs.end(); iter++) {
++        DEBUG("Looking for intf = %s\n", iter->intf.c_str());
++        /* iterate through the list of interfaces for the interface with our name */
++        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
++            if (strncmp(iter->intf.c_str(), ifa->ifa_name, IFNAMSIZ) == 0) {
++                DEBUG("found an interface (%s) we are monitoring, checking Address updates\n", iter->intf.c_str());
++                sockAddr = (struct sockaddr_in *) ifa->ifa_addr;
++                ipAddrString = inet_ntoa(sockAddr->sin_addr);
++                if (iter->hasIpAddr == false || iter->ipAddr != ipAddrString) {
++                    DEBUG("%s been assigned an IP address or the current address has been updated\n",
++                            iter->intf.c_str());
++                    /* check that ip address recv from the socket is a valid one */
++                    if (inet_pton(AF_INET, ipAddrString, &(sockAddr->sin_addr)) > 0) {
++                        DEBUG("%s was assigned ip address of %s\n", iter->intf.c_str(),ipAddrString);
++                        iter->hasIpAddr = true;
++                        iter->ipAddr = ipAddrString;
++
++                        DEBUG("Create wlan_action so that wlan_srv can update all roles\n");
++                        ipAddrUpdate->intf = iter->intf;
++                        strncpy(ipAddrUpdate->ipv4.staticIpv4.ip, ipAddrString, WLAN_IP_LEN);
++
++                        WlanAction *new_action = new WlanAction {
++                                WlanActionType::WlanSrvTypeIpAddrUpdate,
++                                WlanActionSource::SrcInternal};
++                        new_action->pack(*ipAddrUpdate);
++                        (ctx->wlan_srv)->queueAction(new_action);
++                    }
++                } else {
++                    DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
++                } /* if (iter->hasIpAddr...) */
++                break; //change to goto??
++            } /* if (strncmp(iter->....)) */
++        } /* for (ifa...) */
++    } /* for (auto iter...) */
++
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::checkIntfIpAddress() */
++
++
++
++/*
++bool VnmIpc::checkIntfIpAddress()
++{
++    bool rc = false;
++    WlanContext_t *ctx = NULL;
++    WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
+     struct nlmsghdr *nlh = NULL;
+     char buf[4096];
+     int ret = 0;
+@@ -648,7 +704,7 @@ bool VnmIpc::checkIntfIpAddress()
+     ifa = (struct ifaddrmsg *) NLMSG_DATA(nlh);
+     rth = IFA_RTA(ifa);
+ 
+-    /* Convert the raw Interface name and Ip Address to strings for comparison */
++    / * Convert the raw Interface name and Ip Address to strings for comparison * /
+     if_indextoname(ifa->ifa_index, intName);
+     ipAddrRaw = htonl(*((uint32_t *)RTA_DATA(rth)));
+     sprintf(ipAddrString,"%d.%d.%d.%d", (ipAddrRaw >> 24) & 0xff,
+@@ -656,7 +712,7 @@ bool VnmIpc::checkIntfIpAddress()
+                                         (ipAddrRaw >> 8) & 0xff,
+                                          ipAddrRaw & 0xff);
+ 
+-    /* check that the Interface changed is one we are monitoring and update accordingly if yes */
++    / * check that the Interface changed is one we are monitoring and update accordingly if yes * /
+     for (auto iter = m_intfs.begin();
+               iter != m_intfs.end();
+               iter++) {
+@@ -665,7 +721,7 @@ bool VnmIpc::checkIntfIpAddress()
+             if (iter->hasIpAddr == false || iter->ipAddr != ipAddrString) {
+                 DEBUG("%s been assigned an IP address or the current address has been updated\n",
+                         iter->intf.c_str());
+-                /* check that ip address recv from the socket is a valid one */
++                / * check that ip address recv from the socket is a valid one * /
+                 if (inet_pton(AF_INET, ipAddrString, &(sa.sin_addr)) > 0) {
+                     DEBUG("%s was assigned ip address of %s\n", iter->intf.c_str(),ipAddrString);
+                     iter->hasIpAddr = true;
+@@ -685,15 +741,15 @@ bool VnmIpc::checkIntfIpAddress()
+                 DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
+             }
+             break;
+-        } /* if */
+-    } /* for() */
++        } / * if * /
++    } / * for() * /
+ 
+     rc = true;
+ 
+ LEAVE:
+     EXIT();
+     return(rc);
+-} /* VnmIpc::checkIntfIpAddress() */
++} / * VnmIpc::checkIntfIpAddress() */
+ /******************************************************************************/
+ } /* wlan*/
+ /******************************************************************************/

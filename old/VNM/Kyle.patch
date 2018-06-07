@@ -1,0 +1,1691 @@
+diff -Ndur '--exclude=.git' ./client/util/logger.hpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/client/util/logger.hpp
+--- ./client/util/logger.hpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/client/util/logger.hpp	2018-04-12 11:15:03.980000000 -0400
+@@ -32,8 +32,8 @@
+ /*
+  * uncomment to add more logging
+  */
+-#define USE_WLAN_ENTER_EXIT
+-#define USE_WLAN_TRACE
++//#define USE_WLAN_ENTER_EXIT
++//#define USE_WLAN_TRACE
+ #define USE_WLAN_DEBUG
+ 
+ /* DEFINES ********************************************************************/
+diff -Ndur '--exclude=.git' ./service/main.cpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/main.cpp
+--- ./service/main.cpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/main.cpp	2018-04-12 11:15:03.980000000 -0400
+@@ -384,6 +384,16 @@
+     }
+ #endif /* CONFIG_WLANIPC_FEATURE */
+ 
++    /* start up vnm-ipc */
++    ctx->vnm_ipc = new VnmIpc((void *)ctx);
++    if ((ctx->vnm_ipc)->start()) {
++        DEBUG("Started vnm_ipc\n");
++    } else {
++        ERROR("Failed to start vnm_ipc\n");
++        rc = -1;
++        goto CLEANUP;
++    }
++
+     /* successful init!*/
+     ctx->running = true;
+     ctx->starting = false;
+@@ -410,6 +420,14 @@
+     /* signal all threads to end */
+     ctx->running = false;
+ 
++    /* clean up vnm-ipc thread */
++    INFO("Cleaning up vnm ipc\n");
++    (ctx->vnm_ipc)->stop();
++    delete(ctx->vnm_ipc);
++    ctx->vnm_ipc = NULL;
++    INFO("vnm_ipc cleaned up\n");
++
++
+ #ifdef CONFIG_WLANIPC_THREAD
+     /* clean up wlan-ipc thread */
+     INFO("Cleaning up wlan ipc\n");
+@@ -982,11 +1000,21 @@
+     profile->sec.wep.defaultKeyIndex = 0;
+     strncpy(profile->sec.wep.key[0], "12345",
+             sizeof(profile->sec.wep.key[0]));
+-    profile->ipv4AddrType = Ipv4AddrType::DhcpClient;
++    //profile->ipv4AddrType = Ipv4AddrType::DhcpClient;
++    profile->ipv4AddrType = Ipv4AddrType::Static;
++    strncpy(profile->ipv4.staticIpv4.ip, "192.168.1.149",
++            sizeof(profile->ipv4.staticIpv4.ip));
++    strncpy(profile->ipv4.staticIpv4.netmask, "255.255.255.0",
++            sizeof(profile->ipv4.staticIpv4.netmask));
+     profile->ipv6AddrType = Ipv6AddrType::None;
+ #else
+-    strncpy(profile->ssid, "wlanDemo", sizeof(profile->ssid));
+-    profile->securityType = Security::Open;
++    strncpy(profile->ssid, "kylekyle", sizeof(profile->ssid));
++    profile->securityType = Security::WpaPersonal;
++    strncpy(profile->sec.wpaPsk.password, "kylekyle", 8);
++    profile->sec.wpaPsk.password[8] = '\0';
++    profile->sec.wpaPsk.pairCipher = PairwiseCipher::Ccmp;
++    profile->sec.wpaPsk.groupCipher = GroupCipher::Ccmp;
++    //profile->ipv4AddrType = Ipv4AddrType::DhcpClient;
+     profile->ipv4AddrType = Ipv4AddrType::Static;
+     strncpy(profile->ipv4.staticIpv4.ip, "192.168.1.149",
+             sizeof(profile->ipv4.staticIpv4.ip));
+diff -Ndur '--exclude=.git' ./service/main.hpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/main.hpp
+--- ./service/main.hpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/main.hpp	2018-04-12 11:15:03.980000000 -0400
+@@ -27,6 +27,7 @@
+ #include "drv_ctrl.hpp"
+ #include "wlan_data_types.hpp"
+ #include "os_abstraction.hpp"
++#include "vnm_ipc.hpp"
+ 
+ #ifdef CONFIG_WSTAS_FEATURE
+ #include "wstas.hpp"
+@@ -84,6 +85,7 @@
+     HostApd         *hostapd;
+     WpaSupp         *wpa_supp;
+     DrvCtrl         *drv_ctrl;
++    VnmIpc          *vnm_ipc;
+ 
+ #ifdef CONFIG_WSTAS_FEATURE
+     Wstas           *wstas;
+@@ -112,6 +114,7 @@
+ #ifdef CONFIG_TCUIPC_FEATURE
+     TcuIpcClient    *tcu_ipc;
+ #endif /* CONFIG_TCUIPC_FEATURE */
++
+ } WlanContext_t;
+ /******************************************************************************/
+ } /* wlan_srv */
+diff -Ndur '--exclude=.git' ./service/Makefile /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/Makefile
+--- ./service/Makefile	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/Makefile	2018-04-12 11:15:03.980000000 -0400
+@@ -44,6 +44,7 @@
+ SRCS += hostapd/hostapd.cpp
+ SRCS += hostapd/hostapd_cmds.cpp
+ SRCS += drv_ctrl/drv_ctrl.cpp
++SRCS += vnm_ipc/vnm_ipc.cpp
+ 
+ INCLUDES += -I$(SRCDIR)/service/
+ INCLUDES += -I$(SRCDIR)/service/wlan_srv
+@@ -54,9 +55,10 @@
+ INCLUDES += -I$(SRCDIR)/service/wpa_supp
+ INCLUDES += -I$(SRCDIR)/service/hostapd
+ INCLUDES += -I$(SRCDIR)/service/drv_ctrl
++INCLUDES += -I$(SRCDIR)/service/vnm_ipc
+ INCLUDES += -I$(SRCDIR)/public
+ 
+-LIBS += -ltelemetry -lwpa_client
++LIBS += -ltelemetry -lwpa_client -lvnmipc
+ 
+ # add feature specific stuff
+ ifdef CONFIG_WLANIPC_FEATURE
+@@ -84,13 +86,9 @@
+ SRCS += tcu_ipc/tcu_ipc_client.cpp
+ SRCS += tcu_ipc/tcu_ipc_utils.cpp
+ SRCS += tcu_ipc/service_cand.cpp
+-SRCS += tcu_ipc/service_spcm.cpp
+ SRCS += $(INSTALL_HDIR)/idl/cand/TcuIpcCand.pb.cc
+-SRCS += $(INSTALL_HDIR)/idl/spcm/TcuIpcSpcm.pb.cc
+-SRCS += $(INSTALL_HDIR)/idl/spcm/tcu_spcm_common.pb.cc
+ INCLUDES += -I$(SRCDIR)/service/tcu_ipc/
+ INCLUDES += -I$(INSTALL_HDIR)/idl
+-INCLUDES += -I${FORD_ECU_ROOT}/fnv/spcm/include
+ LIBS += -lprotobuf -ltcuipc-client -lwlanidl
+ CFLAGS += -DCONFIG_TCUIPC_FEATURE
+ endif
+diff -Ndur '--exclude=.git' ./service/makefile.linux /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/makefile.linux
+--- ./service/makefile.linux	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/makefile.linux	2018-04-12 11:15:03.980000000 -0400
+@@ -1 +1 @@
+-LIBS += -lpthread
++LIBS += -lpthread -lrt
+diff -Ndur '--exclude=.git' ./service/makefile.qnx /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/makefile.qnx
+--- ./service/makefile.qnx	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/makefile.qnx	2018-04-12 11:15:03.980000000 -0400
+@@ -1 +1 @@
+-LIBS += -lsocket
++LIBS += -lsocket -lmq
+diff -Ndur '--exclude=.git' ./service/utils/wlan_action/wlan_action.cpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/utils/wlan_action/wlan_action.cpp
+--- ./service/utils/wlan_action/wlan_action.cpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/utils/wlan_action/wlan_action.cpp	2018-04-12 11:15:03.980000000 -0400
+@@ -90,6 +90,7 @@
+     cleanUpInteger();
+     cleanUpScanRes();
+     cleanUpProfile();
++    cleanUpIpAddrUpdate();
+ 
+     if (m_data_cb) {
+         DEBUG("Removing packed data from wlan_action id= %lu\n", m_id);
+@@ -406,6 +407,9 @@
+     case (WlanActionType::WlanSrvTypeEcallDone):
+         str = "Wlan_Srv Ecall Done";
+         break;
++    case (WlanActionType::WlanSrvTypeIpAddrUpdate):
++        str = "Wlan_Srv IP Address Update";
++        break;
+     case (WlanActionType::WlanSrvTypeEmcStart):
+         str = "Wlan_Srv Emc Start";
+         break;
+@@ -466,6 +470,9 @@
+     case (WlanActionType::WstasTypeIpAddrError):
+         str = "WSTAS IP Addr Error";
+         break;
++    case (WlanActionType::WstasTypeIpAddrUpdate):
++        str = "WSTAS IP Address Update";
++        break;
+     case (WlanActionType::WstasTypeDisconnect):
+         str = "WSTAS Disconnect";
+         break;
+@@ -538,6 +545,9 @@
+     case (WlanActionType::WhssTypeIpAddressSetupComplete):
+         str = "WHSS IP Address Setup Complete";
+         break;
++    case (WlanActionType::WhssTypeIpAddrUpdate):
++        str = "WHSS IP Address Update";
++        break;
+     case (WlanActionType::WhssTypeDhcpServerSetupStart):
+         str = "WHSS DHCP Server Setup Start";
+         break;
+@@ -595,12 +605,6 @@
+     case (WlanActionType::WhssTypeDataUsageRefreshNoRsp):
+         str = "WHSS Data Usage Req - Refresh No Response";
+         break;
+-    case (WlanActionType::WhssTypeDataUsageFeatureEnabled):
+-        str = "WHSS Data Usage Feature Enabled";
+-        break;
+-    case (WlanActionType::WhssTypeDataUsageFeatureDisabled):
+-        str = "WHSS Data Usage Feature Disabled";
+-        break;
+     case (WlanActionType::WhssTypeMax):
+         str = "WHSS Max";
+         break;
+@@ -631,6 +635,9 @@
+     case (WlanActionType::WapsTypeErrorDone):
+         str = "WAPS Error Done";
+         break;
++    case (WlanActionType::WapsTypeIpAddrUpdate):
++        str = "WAPS IP Address Update";
++        break;
+     case (WlanActionType::WapsTypeApBroadcasting):
+         str = "WAPS Max";
+         break;
+@@ -780,6 +787,9 @@
+     case (WlanActionSource::SrcWlanIpc):
+         str = "Wlan-IPC";
+         break;
++    case (WlanActionSource::SrcVnmIpc):
++        str = "Vnm-IPC";
++        break;
+     case (WlanActionSource::SrcMax):
+         str = "Max";
+         break;
+@@ -848,6 +858,7 @@
+     case (WlanActionType::WlanSrvTypeMasterResetDone):
+     case (WlanActionType::WlanSrvTypeEcall):
+     case (WlanActionType::WlanSrvTypeEcallDone):
++    case (WlanActionType::WlanSrvTypeIpAddrUpdate):
+     case (WlanActionType::WlanSrvTypeEmcStart):
+     case (WlanActionType::WlanSrvTypeEmcDone):
+     case (WlanActionType::WlanSrvTypeStart):
+@@ -861,6 +872,7 @@
+     case (WlanActionType::WstasTypeAuthenticated):
+     case (WlanActionType::WstasTypeIpAddrCmplt):
+     case (WlanActionType::WstasTypeIpAddrError):
++    case (WlanActionType::WstasTypeIpAddrUpdate):
+     case (WlanActionType::WstasTypeDisconnecting):
+     case (WlanActionType::WstasTypeDisconnected):
+     case (WlanActionType::WstasTypeStart):
+@@ -881,6 +893,7 @@
+     case (WlanActionType::WhssTypeApBroadcasting):
+     case (WlanActionType::WhssTypeIpAddressSetupStart):
+     case (WlanActionType::WhssTypeIpAddressSetupComplete):
++    case (WlanActionType::WhssTypeIpAddrUpdate):
+     case (WlanActionType::WhssTypeDhcpServerSetupStart):
+     case (WlanActionType::WhssTypeDhcpServerSetupComplete):
+     case (WlanActionType::WhssTypeApnSetupStart):
+@@ -900,14 +913,13 @@
+     case (WlanActionType::WhssTypeDataUsageCurrent):
+     case (WlanActionType::WhssTypeDataUsageRefresh):
+     case (WlanActionType::WhssTypeDataUsageRefreshNoRsp):
+-    case (WlanActionType::WhssTypeDataUsageFeatureEnabled):
+-    case (WlanActionType::WhssTypeDataUsageFeatureDisabled):
+     case (WlanActionType::WapsTypeStart):
+     case (WlanActionType::WapsTypeStartDone):
+     case (WlanActionType::WapsTypeStop):
+     case (WlanActionType::WapsTypeStopDone):
+     case (WlanActionType::WapsTypeError):
+     case (WlanActionType::WapsTypeErrorDone):
++    case (WlanActionType::WapsTypeIpAddrUpdate):
+     case (WlanActionType::WapsTypeApBroadcasting):
+         subType = WlanActionSubType::SubTypeEvent;
+         break;
+@@ -1114,6 +1126,41 @@
+     EXIT();
+     return;
+ } /* WlanAction::cleanUpProfile() */
++
++
++void WlanAction::pack(WlanIpAddrUpdate_t &ipAddrUpdate)
++{
++    ENTER();
++
++    m_ipAddrUpdate = ipAddrUpdate;
++
++    EXIT();
++    return;
++} /* WlanAction::unpack(WlanIpAddrUpdate_t &ipAddrUpdate) */
++
++
++void WlanAction::unpack(WlanIpAddrUpdate_t *ipAddrUpdate)
++{
++    ENTER();
++
++    *ipAddrUpdate = m_ipAddrUpdate;
++
++    EXIT();
++    return;
++} /* WlanAction::unpack(WlanIpAddrUpdate_t *ipAddrUpdate) */
++
++
++void WlanAction::cleanUpIpAddrUpdate()
++{
++    ENTER();
++
++    m_ipAddrUpdate.intf.empty();
++    m_ipAddrUpdate.ipv4AddrType = {Ipv4AddrType::None};
++    memset(&m_ipAddrUpdate.ipv4, 0x0, sizeof(m_ipAddrUpdate.ipv4));
++
++    EXIT();
++    return;
++} /* WlanAction::cleanUpIpAddrUpdate() */
+ /******************************************************************************/
+ 
+ }; /* wlan */
+diff -Ndur '--exclude=.git' ./service/utils/wlan_action/wlan_action.hpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/utils/wlan_action/wlan_action.hpp
+--- ./service/utils/wlan_action/wlan_action.hpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/utils/wlan_action/wlan_action.hpp	2018-04-12 11:15:03.980000000 -0400
+@@ -56,6 +56,7 @@
+     WlanSrvTypeMasterResetDone,
+     WlanSrvTypeEcall,
+     WlanSrvTypeEcallDone,
++    WlanSrvTypeIpAddrUpdate,
+     WlanSrvTypeEmcStart,
+     WlanSrvTypeEmcEnable,
+     WlanSrvTypeEmcDisable,
+@@ -76,6 +77,7 @@
+     WstasTypeAuthenticated,  /* !! netwrok auth NOT AP auth */
+     WstasTypeIpAddrCmplt,
+     WstasTypeIpAddrError,
++    WstasTypeIpAddrUpdate,
+     WstasTypeDisconnect,
+     WstasTypeDisconnecting,
+     WstasTypeDisconnected,
+@@ -96,6 +98,7 @@
+     WhssTypeApBroadcasting,
+     WhssTypeIpAddressSetupStart,
+     WhssTypeIpAddressSetupComplete,
++    WhssTypeIpAddrUpdate,
+     WhssTypeDhcpServerSetupStart,
+     WhssTypeDhcpServerSetupComplete,
+     WhssTypeApnSetupStart,
+@@ -121,8 +124,6 @@
+     WhssTypeDataUsageCurrent,
+     WhssTypeDataUsageRefresh,
+     WhssTypeDataUsageRefreshNoRsp,
+-    WhssTypeDataUsageFeatureEnabled,
+-    WhssTypeDataUsageFeatureDisabled,
+     WhssTypeMax = 50000,
+     /* waps */
+     WapsTypeMin = 50001,
+@@ -134,8 +135,9 @@
+     WapsTypeStopDone,
+     WapsTypeError,
+     WapsTypeErrorDone,
++    WapsTypeIpAddrUpdate,
+     WapsTypeApBroadcasting,
+-    WapsTypeMax,
++    WapsTypeMax = 60000,
+     /* Bts */
+     BtsTypeMin = 60001,
+     BtsTypeRequestFw,
+@@ -194,9 +196,34 @@
+     SrcSysIpc,
+     SrcTcuIpc,
+     SrcWlanIpc,
++    SrcVnmIpc,
+     SrcMax
+ };
+ 
++
++/**
++ *
++ * @brief Structure used to update Role Servers with IP Address changes
++ *
++ * @details Used by Vmn_ipc to update Roles when a IP Address is changed or modified
++ *
++ */
++typedef struct WlanIpAddrUpdate {
++    std::string         intf;       /**< Interface name that was Updated */
++    Ipv4AddrType        ipv4AddrType = {Ipv4AddrType::DhcpClient};           /**< Type of IPv4 Addressing */
++    union ipv4 {
++        ipv4Addr_t      staticIpv4;             /**< static IPv4 Settings */
++        ipv4() {memset(this, 0, sizeof(ipv4));};
++    } ipv4;
++    // UnComment when IPv6 is supported
++    //Ipv6AddrType        ipv6AddrType = {Ipv6AddrType::None};           /**< IPv6 Addressing */
++    //union ipv6 {
++    //    ipv6Addr_t      staticIpv6;             /**< static IPv6 Settings */
++    //    ipv6() {memset(this, 0, sizeof(ipv6));};
++    //} ipv6;
++} WlanIpAddrUpdate_t;
++
++
+ // TODO: add doxygen
+ typedef std::function<void(void*)> wlanActionCb_t;
+ /******************************************************************************/
+@@ -230,6 +257,9 @@
+         void pack(WlanProfile_t &profile);
+         void unpack(WlanProfile_t *profile);
+ 
++        void pack(WlanIpAddrUpdate_t &ipAddrUpdate);
++        void unpack(WlanIpAddrUpdate_t *ipAddrUpdate);
++
+         void setStartCb(wlanActionCb_t);
+         void setEndCb(wlanActionCb_t);
+ 
+@@ -296,6 +326,9 @@
+ 
+         WlanProfile_t m_profile;
+         void cleanUpProfile();
++
++        WlanIpAddrUpdate_t m_ipAddrUpdate;
++        void cleanUpIpAddrUpdate();
+ };
+ 
+ 
+diff -Ndur '--exclude=.git' ./service/vnm_ipc/vnm_ipc.cpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/vnm_ipc/vnm_ipc.cpp
+--- ./service/vnm_ipc/vnm_ipc.cpp	1969-12-31 19:00:00.000000000 -0500
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/vnm_ipc/vnm_ipc.cpp	2018-04-12 11:15:03.980000000 -0400
+@@ -0,0 +1,751 @@
++/*
++ * CONFIDENTIAL - FORD MOTOR COMPANY
++ *
++ * This is an unpublished work, which is a trade secret, created in
++ * 2017.  Ford Motor Company owns all rights to this work and intends
++ * to maintain it in confidence to preserve its trade secret status.
++ * Ford Motor Company reserves the right to protect this work as an
++ * unpublished copyrighted work in the event of an inadvertent or
++ * deliberate unauthorized publication.  Ford Motor Company also
++ * reserves its rights under the copyright laws to protect this work
++ * as a published work.  Those having access to this work may not copy
++ * it, use it, or disclose the information contained in it without
++ * the written authorization of Ford Motor Company.
++ */
++
++/* INCLUDES *******************************************************************/
++#include <algorithm>
++#include <sys/socket.h>
++#include <ifaddrs.h>
++#include <arpa/inet.h>
++
++#ifdef WLAN_TCU
++#include <linux/netlink.h>
++#include <linux/rtnetlink.h>
++#endif /* WLAN_TCU */
++
++#ifdef WLAN_SYNC4
++#include <net/if.h>
++#include <net/route.h>
++#endif /* WLAN_SYNC4 */
++
++#include "wlan_srv-logger.hpp"
++#include "vnm/vnmipcif.hpp"
++
++#include "main.hpp"
++/******************************************************************************/
++
++/* NAMESPACE ******************************************************************/
++namespace wlan {
++/******************************************************************************/
++
++/* DEFINES ********************************************************************/
++// TODO: fill in log tag
++static const char* TAG = "vnm_ipc";
++
++#define WRITE_TO_FD 1
++#define INTF_MONITOR_FILE_PATH "/proc/net/fib_trie"
++/* ****************************************************************************/
++
++/* GLOBALS ********************************************************************/
++/******************************************************************************/
++
++/* PROTOTYPES *****************************************************************/
++/******************************************************************************/
++
++/* FUNCTIONS/CLASSES **********************************************************/
++VnmIpc::VnmIpc(void *ctx):
++    m_globalCtx(ctx)
++{
++    ENTER();
++
++    m_running = false;
++
++    m_intfs.clear();
++    m_reqsQ.clear();
++
++    m_signalPipeRead = -1;
++    m_signalPipeWrite = -1;
++    m_signalIntfUpdate = -1;
++
++    FD_ZERO(&m_rfds);
++    m_maxFd = 0;
++
++    EXIT();
++} /* VnmIpc::VnmIpc() */
++
++
++VnmIpc::~VnmIpc()
++{
++    ENTER();
++
++    m_thread = NULL;
++    m_running = NULL;
++
++    m_intfs.clear();
++    m_reqsQ.clear();
++
++    m_signalPipeRead = 0;
++    m_signalPipeWrite = 0;
++    m_signalIntfUpdate = 0;
++
++    FD_ZERO(&m_rfds);
++    m_maxFd = 0;
++
++    EXIT();
++} /* VnmIpc::VnmIpc() */
++
++
++bool VnmIpc::start()
++{
++    int pipeFd[2] = {-1, -1};
++    bool rc = false;
++    int ret = 0;
++#ifdef WLAN_TCU
++    struct sockaddr_nl addr = {0};
++#endif /* WLAN_TCU */
++
++    ENTER();
++
++    /* open our pipe */
++    ret = pipe(pipeFd);
++    if (ret) {
++        ERROR("Failed to allocate pipe - %s\n", strerror(errno));
++
++        if (m_signalPipeRead >= 0) {
++            close(m_signalPipeRead);
++        }
++        if (m_signalPipeWrite >= 0) {
++            close(m_signalPipeWrite);
++        }
++
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully created a pipe - fd = %d/%d\n", pipeFd[0], pipeFd[1]);
++    }
++
++    /* save the fd's for the pipe */
++    m_signalPipeRead = pipeFd[0];
++    m_signalPipeWrite = pipeFd[1];
++
++#ifdef WLAN_TCU
++    m_signalIntfUpdate = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
++#endif /* WLAN_TCU */
++
++#ifdef WLAN_SYNC4
++    m_signalIntfUpdate = socket(PF_ROUTE, SOCK_RAW, 0);
++#endif /* WLAN_SYNC4 */
++    if (m_signalIntfUpdate < 0) {
++        ERROR("Failed to open network socket\n");
++        if (m_signalIntfUpdate >= 0) {
++            close(m_signalIntfUpdate);
++        }
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully opened socket, fd - %d\n", m_signalIntfUpdate);
++    }
++
++#ifdef WLAN_TCU
++    addr.nl_family = AF_NETLINK;
++    addr.nl_groups = RTMGRP_IPV4_IFADDR;
++
++    ret = bind(m_signalIntfUpdate, (struct sockaddr *)&addr, sizeof(addr));
++    if (ret < 0) {
++        ERROR("Failed to bind IntfUpdate pipe - %s\n", strerror(errno));
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully Bind'ed the IntfUpdate pipe\n");
++    }
++#endif /* WLAN_TCU */
++
++    m_vnmIpcRetCode = m_vnmIpcInstance.initialize(m_vnmIpcId);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to start vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
++
++    /* start the mainLoop in it's own thread */
++    m_running = true;
++    m_thread = new std::thread(&VnmIpc::waitForData, this);
++
++    INFO("Successfully started vnm_ipc\n");
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::start() */
++
++
++bool VnmIpc::stop()
++{
++    bool rc = false;
++
++    ENTER();
++
++    m_running = false;
++    INFO("waiting for vnm thread to end...\n");
++    m_thread->join();
++    INFO("vnm thread done\n");
++
++    if (m_signalPipeRead >= 0) {
++        close(m_signalPipeRead);
++    }
++
++    if (m_signalPipeWrite >= 0) {
++        close(m_signalPipeWrite);
++    }
++
++    if (m_signalIntfUpdate >= 0) {
++        close(m_signalIntfUpdate);
++    }
++
++    for (auto iter = m_intfs.begin();
++              iter != m_intfs.end();
++              iter++) {
++
++        m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode(iter->intf);
++        if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++            ERROR("Failed to set DHCP Idle Mode for vnm_ipc\n");
++            rc = false;
++        }
++    } /* for() */
++
++    if (rc == false) {
++        ERROR("vnm_ipc may not have been completely stopped / disconnected\n");
++        goto LEAVE;
++    }
++
++    INFO("Successfully stopped vnm_ipc\n");
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::stop() */
++
++
++void VnmIpc::waitForData()
++{
++    struct timeval tv = {0};
++    int ret = 0;
++
++    ENTER();
++
++    while (m_running)
++    {
++        TRACE("waiting for new connections...\n");
++
++        setupRfds();
++
++        /* use a time out of 1 sec so shutdown is timely */
++        tv.tv_sec = 1;
++        tv.tv_usec = 0;
++
++        ret = select(m_maxFd + 1, &m_rfds, NULL, NULL, &tv);
++        switch (ret) {
++        case (-1):
++            WARN("select returned error - %s\n", strerror(errno));
++            break;
++        case (0):
++            TRACE("Time out from select()\n");
++            break;
++        default:
++            DEBUG("select returned with data to read\n");
++            handleFdsReady();
++            break;
++        } /* switch (ret) */
++    } /* while (m_running) */
++
++    EXIT();
++    return;
++} /* VnmIpc::waitForData() */
++
++
++void VnmIpc::setupRfds(void)
++{
++    ENTER();
++
++    FD_ZERO(&m_rfds);
++    FD_SET(m_signalPipeRead, &m_rfds);
++
++    TRACE("Added fd = %d to rfds\n", m_signalPipeRead);
++    FD_SET(m_signalIntfUpdate, &m_rfds);
++    TRACE("Added fd = %d to rfds\n", m_signalIntfUpdate);
++
++    m_maxFd = std::fmax(m_signalPipeRead, m_signalIntfUpdate);
++
++    TRACE("Max_FD set to - %d\n", m_maxFd);
++
++    EXIT();
++} /* VnmIpc::setupRfds() */
++
++
++void VnmIpc::handleFdsReady(void)
++{
++    int rc = 0;
++    uint32_t buf = 0;
++    bool ret = false;
++
++    ENTER();
++
++    /* first check if our pipe has anything */
++    if (FD_ISSET(m_signalPipeRead, &m_rfds)) {
++        DEBUG("Data is ready on the VNM_ipc readPipe\n");
++        ret = handleVnmIpcRequest();
++        if (ret == false) {
++            WARN("selectVnmCall() failed\n");
++        } else {
++            DEBUG("selectVnmCall() succeced\n");
++        }
++
++        rc = read(m_signalPipeRead, (void *)(&buf), sizeof(buf));
++        if (rc < 0) {
++            ERROR("Failed to read from wake-up pipe - %s\n", strerror(errno));
++        } else {
++            DEBUG("Successfully cleared the wake-up pipe - %d\n", buf);
++        }
++    } else if (FD_ISSET(m_signalIntfUpdate, &m_rfds)) {
++        DEBUG("Detected a networking change or update, check if it was for a monitored Interface\n");
++        /* The m_signalIntfUpdate pipe is read/cleared within checkIntfIpAddress, no need to manually clear the pipe */
++        ret = checkIntfIpAddress();
++        if (ret == false) {
++            DEBUG("checkIntfAddress() failed\n");
++        } else {
++            DEBUG("checkIntfAddress() succeced\n");
++        }
++    } else {
++        WARN("Select() returned but none of the monitored Fd had data for us....\n");
++    }
++
++    EXIT();
++    return;
++} /* VnmIpc::handleFds() */
++
++
++bool VnmIpc::signalVnmIpc(void)
++{
++    bool rc = false;
++    int ret = 0;
++    uint8_t buf = WRITE_TO_FD;
++
++    ENTER();
++
++    ret = write(m_signalPipeWrite, &buf, sizeof(WRITE_TO_FD));
++    if (ret < 0) {
++        ERROR("Failed to write to wake-up pipe\n");
++        rc = false;
++    } else {
++        INFO("Successfully wrote to wake up vnm_ipc main thread\n");
++        rc = true;
++    }
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::signalVnmIpc() */
++
++
++bool VnmIpc::clearIpv4(const char *intf_request)
++{
++    bool rc = false;
++    VnmIpcReq_t vnmRequest;
++    std::string intf;
++
++    ENTER();
++
++    if (intf_request) {
++        intf = intf_request;
++    }
++
++    INFO("Received clear IPv4 request, queuing request\n");
++
++    vnmRequest.intf = intf;
++    vnmRequest.type = VnmIpcReqType::ClearIpv4;
++    vnmRequest.ipv4Type = Ipv4AddrType::None;
++    vnmRequest.ipv6Type = Ipv6AddrType::None;
++
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
++
++    rc = signalVnmIpc();
++    //error checking
++
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::clearIpv4() */
++
++
++bool VnmIpc::requestStaticIpv4(const char *intf_request, ipv4Addr_t &addr)
++{
++    bool rc = false;
++    VnmIpcReq_t vnmRequest;
++    std::string intf;
++
++    ENTER();
++
++    if (intf_request) {
++        intf = intf_request;
++    }
++
++    INFO("Received Static IPv4 request, queuing request\n");
++
++    vnmRequest.intf = intf;
++    vnmRequest.type = VnmIpcReqType::RequestStaticIpv4;
++    vnmRequest.ipv4Type = Ipv4AddrType::Static;
++    vnmRequest.ipv4.staticAddr = addr;
++    vnmRequest.ipv6Type = Ipv6AddrType::None;
++
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
++
++    rc = signalVnmIpc();
++    //error checking
++
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::requestStaticIpv4() */
++
++
++bool VnmIpc::requestDhcpClient(const char *intf_request)
++{
++    bool rc = false;
++    VnmIpcReq_t vnmRequest;
++    std::string intf;
++
++    ENTER();
++
++    if (intf_request) {
++        intf = intf_request;
++    }
++
++    INFO("Received DHCP Client request, queuing request\n");
++
++    vnmRequest.intf = intf;
++    vnmRequest.type = VnmIpcReqType::RequestDhcpClient;
++    vnmRequest.ipv4Type = Ipv4AddrType::None;
++    vnmRequest.ipv6Type = Ipv6AddrType::None;
++
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
++
++    rc = signalVnmIpc();
++    //TODO: error checking
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::requestDhcpClient() */
++
++
++bool VnmIpc::requestDhcpServer(const char *intf_request /* server config */)
++{
++    bool rc = false;
++    VnmIpcReq_t vnmRequest;
++    std::string intf;
++
++    ENTER();
++
++    if (intf_request) {
++        intf = intf_request;
++    }
++
++    INFO("Received DHCP Server request, queuing request\n");
++
++    vnmRequest.intf = intf;
++    vnmRequest.type = VnmIpcReqType::RequestDhcpServer;
++    //TODO: update request with Server Config info
++    //      Tracked with TCU-4866
++    vnmRequest.ipv4Type = Ipv4AddrType::None;
++    vnmRequest.ipv6Type = Ipv6AddrType::None;
++
++    { /* m_qMutex */
++        /* lock the mutex for adding to the memeber queue variable */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        m_reqsQ.push_back(vnmRequest);
++    } /* m_qMutex */
++
++    rc = signalVnmIpc();
++    //TODO: error checking
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::requestDhcpServer() */
++
++bool VnmIpc::checkIntfList(std::string intf)
++{
++    bool rc = false;
++    VnmIpcIntf_t intfToAdd;
++
++    ENTER();
++
++    intfToAdd.intf = intf;
++
++    if (m_intfs.empty()){
++        DEBUG("Interface List was empty, adding interface - %s\n",intf.c_str());
++        m_intfs.push_back(intfToAdd);
++    } else {
++        for (auto iter = m_intfs.begin();
++                  iter != m_intfs.end();
++                  iter++) {
++            if (strncmp(iter->intf.c_str(),intf.c_str(),intf.length()) == 0) {
++                DEBUG("Interface was already present in list\n");
++                break;
++            } /* if */
++        } /* for() */
++        DEBUG("Interface was not in our list, adding\n");
++        m_intfs.push_back(intfToAdd);
++    }
++
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::findIntfFd() */
++
++
++bool VnmIpc::handleVnmIpcRequest()
++{
++    bool rc = false;
++    VnmIpcReq_t vnmRequest;
++
++    ENTER();
++    DEBUG("Check the vnmRequest Type and select the correct handler function\n");
++
++    { /* m_qMutex */
++        /* lock the mutex for checking the Top request Type */
++        std::unique_lock<std::mutex> lock(m_qMutex);
++
++        if(m_reqsQ.empty()) {
++            ERROR("nothing in the vnmRequest queue\n");
++            rc = false;
++            goto LEAVE;
++        } else {
++            vnmRequest = m_reqsQ.front();
++            m_reqsQ.pop_front();
++        }
++    } /* m_qMutex */
++
++    switch (vnmRequest.type) {
++    case (VnmIpcReqType::ClearIpv4):
++        rc = handleClearIpv4(vnmRequest);
++        break;
++    case (VnmIpcReqType::RequestStaticIpv4):
++        rc = handleRequestStaticIpv4(vnmRequest);
++        break;
++    case (VnmIpcReqType::RequestDhcpClient):
++        rc = handleRequestDhcpClient(vnmRequest);
++        break;
++    case (VnmIpcReqType::RequestDhcpServer):
++        rc = handleRequestDhcpServer(vnmRequest);
++        break;
++    default:
++        ERROR("unknown Vnm_ipc request Type\n");
++        rc = false;
++        break;
++    }
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleVnmIpcRequest() */
++
++
++bool VnmIpc::handleClearIpv4(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++
++    ENTER();
++
++    INFO("handling vnm_ipc clearIpv4() request\n");
++    checkIntfList(vnmRequest.intf);
++
++    m_vnmIpcRetCode = m_vnmIpcInstance.clearIpAddress(vnmRequest.intf);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to clear Ip Address using vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleClearIpv4() */
++
++
++bool VnmIpc::handleRequestDhcpClient(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++
++    ENTER();
++
++    INFO("handling vnm_ipc requestDhcpClient() request\n");
++
++    checkIntfList(vnmRequest.intf);
++    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpClientMode(vnmRequest.intf);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to enable dhcp client using vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
++
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleRequestDhcpClient() */
++
++
++bool VnmIpc::handleRequestStaticIpv4(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++
++    ENTER();
++
++    INFO("handling vnm_ipc requestStaticIpv4() request\n");
++
++    checkIntfList(vnmRequest.intf);
++    m_vnmIpcRetCode = m_vnmIpcInstance.setStaticIpAddress(vnmRequest.intf,
++                                                          vnmRequest.ipv4.staticAddr.ip);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to set %s with Static Ip %s using vnm_ipc\n",
++              vnmRequest.intf.c_str(), vnmRequest.ipv4.staticAddr.ip);
++        rc = false;
++        goto LEAVE;
++    }
++
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleRequestStaticIpv4() */
++
++
++bool VnmIpc::handleRequestDhcpServer(VnmIpcReq_t vnmRequest)
++{
++    bool rc = false;
++
++    ENTER();
++
++    checkIntfList(vnmRequest.intf);
++    WARN("DHCP Server requests currenly not supported\n");
++    //TODO: update request with Server Config info
++    //      Tracked with TCU-4866
++    //
++    //INFO("calling into vnm_ipc RequestDhcpServer()\n");
++
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::handleRequestDhcpServer() */
++
++
++bool VnmIpc::checkIntfIpAddress()
++{
++    bool rc = false;
++    WlanContext_t *ctx = NULL;
++    WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
++    char buf[4096];
++    int ret = 0;
++    struct ifaddrs *ifaddr = NULL;
++    struct ifaddrs *ifa = NULL;
++    char *ipAddrString;
++    //std::string ipAddrString;
++    struct sockaddr_in *sockAddr;
++
++    ENTER();
++
++    ctx = (WlanContext_t *)m_globalCtx;
++    //nlh = (struct nlmsghdr *)buf;
++    ipAddrUpdate = new WlanIpAddrUpdate_t();
++
++    ret = recv(m_signalIntfUpdate, buf, 4096, 0);
++    if (ret < 0) {
++        ERROR("Failed to read from recv for m_signalIntfUpdate\n");
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully cleared recv for m_signalIntfUpdate\n");
++    }
++
++    ret = getifaddrs(&ifaddr);
++    if (ret == -1) {
++        ERROR("failed to get interfaces info - %s\n", strerror(errno));
++        goto LEAVE;
++    }
++
++    /* check that the Interface changed is one we are monitoring and update accordingly if yes */
++    for (auto iter = m_intfs.begin(); iter != m_intfs.end(); iter++) {
++        DEBUG("Looking for intf = %s\n", iter->intf.c_str());
++        /* iterate through the list of interfaces for the interface with our name */
++        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
++            if (ifa->ifa_addr->sa_family==AF_INET) {
++                if (strncmp(iter->intf.c_str(), ifa->ifa_name, IFNAMSIZ) == 0) {
++                    DEBUG("found an interface (%s) we are monitoring, checking Address updates\n", iter->intf.c_str());
++                    sockAddr = (struct sockaddr_in *) ifa->ifa_addr;
++                    ipAddrString = inet_ntoa(sockAddr->sin_addr);
++                            DEBUG("%s was assigned ip address of %s\n", iter->intf.c_str(), ipAddrString);
++                    if (iter->hasIpAddr == false || iter->ipAddr != ipAddrString) {
++                        DEBUG("%s been assigned an IP address or the current address has been updated\n",
++                                iter->intf.c_str());
++                        /* check that ip address recv from the socket is a valid one */
++                        if (inet_pton(AF_INET, ipAddrString, &(sockAddr->sin_addr)) > 0) {
++                            DEBUG("%s was assigned ip address of %s\n", iter->intf.c_str(), ipAddrString);
++                            iter->hasIpAddr = true;
++                            iter->ipAddr = ipAddrString;
++
++                            DEBUG("Create wlan_action so that wlan_srv can update all roles\n");
++                            ipAddrUpdate->intf = iter->intf;
++                            strncpy(ipAddrUpdate->ipv4.staticIpv4.ip, ipAddrString, WLAN_IP_LEN);
++
++                            WlanAction *new_action = new WlanAction {
++                                    WlanActionType::WlanSrvTypeIpAddrUpdate,
++                                    WlanActionSource::SrcVnmIpc};
++                            new_action->pack(*ipAddrUpdate);
++                            (ctx->wlan_srv)->queueAction(new_action);
++                        }
++                    } else {
++                        DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
++                    } /* if (iter->hasIpAddr...) */
++                    break; //change to goto??
++                } else {
++                    DEBUG("None of our Interfaces had updates\n");
++                }/* if (strncmp(iter->....)) */
++            } /* if (ifa->ifa_addr....) */
++        } /* for (ifa...) */
++    } /* for (auto iter...) */
++
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::checkIntfIpAddress() */
++/******************************************************************************/
++} /* wlan*/
++/******************************************************************************/
++/* EOF */
++
+diff -Ndur '--exclude=.git' ./service/vnm_ipc/vnm_ipc.hpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/vnm_ipc/vnm_ipc.hpp
+--- ./service/vnm_ipc/vnm_ipc.hpp	1969-12-31 19:00:00.000000000 -0500
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/vnm_ipc/vnm_ipc.hpp	2018-04-12 11:15:03.980000000 -0400
+@@ -0,0 +1,171 @@
++/*
++ * CONFIDENTIAL - FORD MOTOR COMPANY
++ *
++ * This is an unpublished work, which is a trade secret, created in
++ * 2017.  Ford Motor Company owns all rights to this work and intends
++ * to maintain it in confidence to preserve its trade secret status.
++ * Ford Motor Company reserves the right to protect this work as an
++ * unpublished copyrighted work in the event of an inadvertent or
++ * deliberate unauthorized publication.  Ford Motor Company also
++ * reserves its rights under the copyright laws to protect this work
++ * as a published work.  Those having access to this work may not copy
++ * it, use it, or disclose the information contained in it without
++ * the written authorization of Ford Motor Company.
++ */
++
++#ifndef WLAN_SRV_VNM_IPC_HPP
++#define WLAN_SRV_VNM_IPC_HPP
++
++/* INCLUDES *******************************************************************/
++#include "wlan_data_types.hpp"
++#include "vnm/vnmipcif.hpp"
++/******************************************************************************/
++
++/* NAMESPACE ******************************************************************/
++namespace wlan {
++/******************************************************************************/
++
++/* DEFINES ********************************************************************/
++typedef struct VnmIpcIntf {
++    std::string     intf;
++    bool hasIpAddr = false;
++    std::string   ipAddr;
++} VnmIpcIntf_t;
++
++
++enum class VnmIpcReqType
++{
++    Min = 0,
++    Add,
++    ClearIpv4,
++    RequestStaticIpv4,
++    RequestDhcpServer,
++    RequestDhcpClient,
++    Max
++};
++
++
++typedef struct VnmIpcReq {
++    std::string     intf;
++    VnmIpcReqType   type = {VnmIpcReqType::Add};
++    Ipv4AddrType    ipv4Type = {Ipv4AddrType::None};
++   union ipv4 {
++        ipv4Addr_t  staticAddr;
++        ipv4() {memset(this, 0, sizeof(ipv4));};
++    } ipv4;
++    Ipv6AddrType    ipv6Type = {Ipv6AddrType::None};
++    union ipv6 {
++        ipv6Addr_t  staticAddr;
++        ipv6() {memset(this, 0, sizeof(ipv6));};
++    } ipv6;
++} VnmIpcReq_t;
++/* ****************************************************************************/
++
++/* GLOBALS ********************************************************************/
++/******************************************************************************/
++
++/* PROTOTYPES *****************************************************************/
++class VnmIpc
++{
++    public:
++        VnmIpc(void *ctx);
++        virtual ~VnmIpc();
++
++        bool start();
++        bool stop();
++
++        /* IPv4 stuff */
++        bool clearIpv4(const char *intf_request);
++        bool requestStaticIpv4(const char *intf_request, ipv4Addr_t &addr);
++        bool requestDhcpClient(const char *intf_request);
++        bool requestDhcpServer(const char *intf_request /*, server config */);
++
++        /* IPv6 stuff */
++
++    private:
++        VnmIpc(const VnmIpc &) = delete;
++        VnmIpc & operator=(const VnmIpc &) = delete;
++
++        void *m_globalCtx;
++
++        bool m_running;
++        std::thread *m_thread;
++
++        std::string m_vnmIpcId = "wlanSrv";
++
++        fnv::vnm::VnmIpc m_vnmIpcInstance;
++        fnv::vnm::VnmIpcRet_t m_vnmIpcRetCode;
++
++        /*
++         * the list of interfaces that have requests on them and that we should
++         * be monitoring for IP addressing changes
++         */
++        std::list<VnmIpcIntf_t> m_intfs;
++
++        /*
++         * a queue for incoming requests
++         */
++        std::deque<VnmIpcReq_t> m_reqsQ;
++
++        /* mutex for queue */
++        std::mutex m_qMutex;
++
++        /* pipe for signalling when we put something in the queue */
++        int m_signalPipeRead;
++        int m_signalPipeWrite;
++        int m_signalIntfUpdate;
++
++        /* stuff for select loop */
++        fd_set m_rfds;
++        int m_maxFd;
++
++        /*
++         * main processing loop for thread
++         */
++        void waitForData(void);
++
++        /*
++         * helper function to setup m_rfds and m_highestFd
++         */
++        void setupRfds();
++
++        /*
++         * determines which fd has something for us to do
++         */
++        void handleFdsReady(void);
++
++        /*
++         * helper function that abstracts signalling the vnm_ipc thread via
++         * the pipe.
++         */
++        bool signalVnmIpc(void);
++
++        /*
++         * helper function that check whether an interface is already being monitored
++         * and adds it to the list if not, keep track of the fd associated with that 
++         * interface.
++         */
++        bool checkIntfList(std::string intf);
++
++        /*
++         * function that checks the type of VNM request we have received and call the
++         * approtiate handleVNM() function
++         */
++        bool handleVnmIpcRequest(void);
++
++        bool handleClearIpv4(VnmIpcReq_t vnmRequest);
++        bool handleRequestStaticIpv4(VnmIpcReq_t vnmRequest);
++        bool handleRequestDhcpClient(VnmIpcReq_t vnmRequest);
++        bool handleRequestDhcpServer(VnmIpcReq_t vnmRequest);
++
++        int getIntfUpdateFd(void);
++        bool checkIntfIpAddress(void);
++
++
++};
++/******************************************************************************/
++} /* wlan */
++#endif /* WLAN_SRV_VNM_IPC_HPP */
++/******************************************************************************/
++/* EOF */
++
+diff -Ndur '--exclude=.git' ./service/wlan_srv/wlan_srv.cpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wlan_srv/wlan_srv.cpp
+--- ./service/wlan_srv/wlan_srv.cpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wlan_srv/wlan_srv.cpp	2018-04-12 11:15:03.980000000 -0400
+@@ -658,18 +658,25 @@
+ 
+     switch (action->getGroup()) {
+     case (WlanActionGroup::GroupWlanSrv):
+-        action->startOfProcessing();
+-        if (StateMachine::handleEvent(action->getType())) {
+-            INFO("Successfully handled id = %s (%s)\n",
+-                    action->getIdStr().c_str(), action->getTypeStr());
+-            rc = 0;
+-        } else {
+-            ERROR("Failed to handle id = %s (%s)\n",
+-                    action->getIdStr().c_str(), action->getTypeStr());
+-            // TODO: properly handle this error
+-            rc = -1;
++        switch (action->getType()) {
++        case (WlanActionType::WlanSrvTypeIpAddrUpdate):
++            rc = handleIpAddrUpdate(action);
++            break;
++        default:
++            action->startOfProcessing();
++            if (StateMachine::handleEvent(action->getType())) {
++                INFO("Successfully handled id = %s (%s)\n",
++                        action->getIdStr().c_str(), action->getTypeStr());
++                rc = 0;
++            } else {
++                ERROR("Failed to handle id = %s (%s)\n",
++                        action->getIdStr().c_str(), action->getTypeStr());
++                // TODO: properly handle this error
++                rc = -1;
++            }
++            action->endOfProcessing();
++            break;
+         }
+-        action->endOfProcessing();
+         break;
+ #ifdef CONFIG_WSTAS_FEATURE
+     case (WlanActionGroup::GroupWstas):
+@@ -1059,6 +1066,46 @@
+ 
+ 
+ // TODO: add doxygen
++int WlanSrv::handleIpAddrUpdate(WlanAction *action)
++{
++    WlanContext_t *ctx = NULL;
++    WlanAction *new_action[3] = {NULL};
++    WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
++    int i = 0;
++    int rc = 0;
++
++    ENTER();
++
++    action->startOfProcessing();
++    ctx = (WlanContext *)m_globalCtx;
++
++    ipAddrUpdate = new WlanIpAddrUpdate_t();
++
++    INFO("Recieved wlanAction %s. Sending IpAddrUpdate to all roles\n",
++            action->getTypeStr());
++
++    action->unpack(ipAddrUpdate);
++
++    /* Create 3 IpAddrUpdates for each role, Wstas, Whss, Waps */
++    new_action[0] = new WlanAction {WlanActionType::WstasTypeIpAddrUpdate,
++                                          WlanActionSource::SrcInternal};
++    new_action[1] = new WlanAction {WlanActionType::WhssTypeIpAddrUpdate,
++                                          WlanActionSource::SrcInternal};
++    new_action[2] = new WlanAction {WlanActionType::WapsTypeIpAddrUpdate,
++                                          WlanActionSource::SrcInternal};
++
++    for (i = 0; i < 3; i++) {
++        new_action[i]->pack(*ipAddrUpdate);
++        (ctx->wlan_srv)->queueAction(new_action[i]);
++    }
++    action->endOfProcessing();
++
++    EXIT();
++    return(rc);
++} /* WlanSrv::handleIpAddrUpdate(WlanAction *action) */
++
++
++// TODO: add doxygen
+ const char* WlanSrv::currentState()
+ {
+     const char *str = NULL;
+diff -Ndur '--exclude=.git' ./service/wlan_srv/wlan_srv.hpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wlan_srv/wlan_srv.hpp
+--- ./service/wlan_srv/wlan_srv.hpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wlan_srv/wlan_srv.hpp	2018-04-12 11:15:03.980000000 -0400
+@@ -79,6 +79,8 @@
+ 
+         int processWlanAction(WlanAction *action);
+ 
++        int handleIpAddrUpdate(WlanAction *action);
++
+         int priorityQueueAction(WlanAction *action);
+ 
+         int queueApiAction(WlanAction *action, bool priority);
+diff -Ndur '--exclude=.git' ./service/wpa_supp/wpa_supp.cpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wpa_supp/wpa_supp.cpp
+--- ./service/wpa_supp/wpa_supp.cpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wpa_supp/wpa_supp.cpp	2018-04-12 11:15:03.980000000 -0400
+@@ -1043,8 +1043,9 @@
+                                          WlanActionSource::SrcInternal};
+ 
+     /* queue the action with wlan_srv */
+-    (ctx->wlan_srv)->queueAction(action);
+-
++    if (ctx->wlan_srv) {
++        (ctx->wlan_srv)->queueAction(action);
++    }
+     EXIT();
+     return(rc);
+ } /* WpaSupp::stopWpaSupplicant() */
+diff -Ndur '--exclude=.git' ./service/wstas/wstas.cpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wstas/wstas.cpp
+--- ./service/wstas/wstas.cpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wstas/wstas.cpp	2018-04-12 11:15:03.980000000 -0400
+@@ -551,6 +551,9 @@
+     case (WlanActionType::WstasTypeScanResults):
+         handleEventScanResults(action);
+         break;
++    case (WlanActionType::WstasTypeIpAddrUpdate):
++        handleEventIpAddrUpdate(action);
++        break;
+     case (WlanActionType::WstasTypeDisconnected):
+         if (StateMachine::state() != StaSmState::Disconnecting) {
+             INFO("Received Event Disconnected, need to move to State Disconnecting before processing\n");
+@@ -1348,7 +1351,6 @@
+ {
+     WlanContext_t *ctx = NULL;
+     WlanProfile_t* profile = NULL;
+-    WlanAction* new_action = NULL;
+     int rc = 0;
+ 
+     ENTER();
+@@ -1406,17 +1408,6 @@
+ 
+     action->endOfProcessing();
+ 
+-    /*
+-     * TODO: remove this when VNM network API is available.
+-     * Eventually this action will be received on another
+-     * IPC mechanism originating from VNM - for now create
+-     * and queue it internally.
+-     */
+-    new_action = new WlanAction {WlanActionType::WstasTypeIpAddrCmplt,
+-                                 WlanActionSource::SrcInternal};
+-
+-    (ctx->wlan_srv)->queueAction(new_action);
+-
+     /* Clean-up */
+     if (profile) {
+         delete(profile);
+@@ -1495,45 +1486,62 @@
+ } /* Wstas::handleEventScanResults */
+ 
+ 
+-// TODO: add Doxygen
+-int Wstas::setIpv4AddressStatic(ipv4Addr_t ip)
++// TODO: add doxygen
++void Wstas::handleEventIpAddrUpdate(WlanAction *action)
+ {
+-#ifndef OFF_TARGET_BUILD
+-    const char ifconfigCmd[MAX_LEN_START_CMD] = {'\0'};
+-    WlanContext_t* ctx = NULL;
++    WlanContext_t *ctx = NULL;
++    WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
+     std::string ifname;
+-    int rc = 0;
++    ipAddrUpdate = new WlanIpAddrUpdate_t();
++
+     ENTER();
+ 
+-    ctx = (WlanContext_t*)m_globalCtx;
++    action->startOfProcessing();
++
++    INFO("Received an Ip Address Update Event, check if it's for our interface \n");
++
++    ctx = (WlanContext *)m_globalCtx;
+     (ctx->wpa_supp)->interface(ifname);
+-    // TODO: handle this error
+ 
+-    /*
+-     * TODO: call API to set interface with static IP...sendMsg(???)
+-     * Temporary solution is to do it ourselves until VNM API is
+-     * available
+-     */
+-    INFO("Setting static IP address on interface = %s\n", ifname.c_str());
+-    rc = snprintf((char*)ifconfigCmd, MAX_LEN_START_CMD,
+-            "ifconfig %s %s netmask %s",
+-            ifname.c_str(),
+-            ip.ip,
+-            ip.netmask);
++    action->unpack(ipAddrUpdate);
+ 
+-    rc = os_system(ifconfigCmd);
+-    if (rc) {
+-        ERROR("Failed to set IP address with \"%s\" - %d\n", ifconfigCmd, rc);
+-        rc = -1;
++    if(ipAddrUpdate->intf == ifname) {
++        DEBUG("Event was for our interface's (%s), send an IpAddrCmplt Action\n",
++                ipAddrUpdate->intf.c_str());
++
++        WlanAction *new_action = new WlanAction {
++                WlanActionType::WstasTypeIpAddrCmplt,
++                WlanActionSource::SrcInternal,
++        };
++
++        queueAction(new_action);
+     } else {
+-        INFO("Successfully set static IP address - \"%s\"\n", ifconfigCmd);
++        DEBUG("The Ip Address Update was not for our interface, ignoring\n");
+     }
+-#else
++
++    action->endOfProcessing();
++
++    EXIT();
++    return;
++} /* Wstas::handleEventIpAddrUpdate */
++
++
++// TODO: add Doxygen
++int Wstas::setIpv4AddressStatic(ipv4Addr_t ip)
++{
++    WlanContext_t* ctx = NULL;
++    std::string ifname;
+     int rc = 0;
++
+     ENTER();
+ 
+-    WARN("Skipping static IP addressing for off-target mode\n");
+-#endif /* OFF_TARGET_BUILD */
++    ctx = (WlanContext_t*)m_globalCtx;
++
++    INFO("Called into VMN_IPC STATIC\n");
++    (ctx->wpa_supp)->interface(ifname);
++    // TODO: handle this error
++
++    ctx->vnm_ipc->requestStaticIpv4(ifname.c_str(), ip);
+ 
+     EXIT();
+     return rc;
+@@ -1543,40 +1551,18 @@
+ // TODO: add Doxygen
+ int Wstas::setIpv4AddressDynamic()
+ {
+-#ifndef OFF_TARGET_BUILD
+-    const char dhclientCmd[MAX_LEN_START_CMD] = {'\0'};
+     WlanContext_t* ctx = NULL;
+     std::string ifname;
+     int rc = 0;
++
+     ENTER();
+ 
+     ctx = (WlanContext_t*)m_globalCtx;
+     (ctx->wpa_supp)->interface(ifname);
+     // TODO: handle this error
+ 
+-    /*
+-     * TODO: call API to set interface with DHCP address...
+-     * sendMsg(DHCP_IPV4_START, <interface name>)
+-     * Temporary solution is to do it ourselves until VNM API is
+-     * available
+-     */
+-    INFO("Starting dhclient on interface = %s\n", ifname.c_str());
+-    rc = snprintf((char*)dhclientCmd, MAX_LEN_START_CMD,
+-            "dhclient %s", ifname.c_str());
+-
+-    rc = os_system(dhclientCmd);
+-    if (rc) {
+-        ERROR("Failed to start dhclient with \"%s\" - %d\n", dhclientCmd, rc);
+-        rc = -1;
+-    } else {
+-        INFO("dhclient started successfully - \"%s\"\n", dhclientCmd);
+-    }
+-#else
+-    int rc = 0;
+-    ENTER();
+-
+-    WARN("Skipping dynamic IP addressing for off-target mode\n");
+-#endif /* OFF_TARGET_BUILD */
++    ctx->vnm_ipc->requestDhcpClient(ifname.c_str());
++    INFO("Called into VMN_IPC Dhcp Client");
+ 
+     EXIT();
+     return rc;
+diff -Ndur '--exclude=.git' ./service/wstas/wstas.hpp /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wstas/wstas.hpp
+--- ./service/wstas/wstas.hpp	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/service/wstas/wstas.hpp	2018-04-12 11:15:03.980000000 -0400
+@@ -101,7 +101,8 @@
+         int handleDisablingToError();
+         int handleErrorToOff();
+         int handleEventAuthenticated(WlanAction* action);
+-        void handleEventScanResults(WlanAction  *action);
++        void handleEventScanResults(WlanAction *action);
++        void handleEventIpAddrUpdate(WlanAction *action);
+ 
+         int setIpv4AddressStatic(ipv4Addr_t ip);
+         int setIpv4AddressDynamic();
+diff -Ndur '--exclude=.git' ./test/Makefile /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/test/Makefile
+--- ./test/Makefile	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/test/Makefile	2018-04-12 11:15:03.980000000 -0400
+@@ -49,6 +49,7 @@
+ SRCS += $(SRCDIR)/service/hostapd/hostapd.cpp
+ SRCS += $(SRCDIR)/service/hostapd/hostapd_cmds.cpp
+ SRCS += $(SRCDIR)/service/drv_ctrl/drv_ctrl.cpp
++SRCS += $(SRCDIR)/service/vnm_ipc/vnm_ipc.cpp
+ 
+ INCLUDES += -I$(SRCDIR)/service/
+ INCLUDES += -I$(SRCDIR)/service/wlan_srv
+@@ -59,12 +60,13 @@
+ INCLUDES += -I$(SRCDIR)/service/wpa_supp
+ INCLUDES += -I$(SRCDIR)/service/hostapd
+ INCLUDES += -I$(SRCDIR)/service/drv_ctrl
++INCLUDES += -I$(SRCDIR)/service/vnm_ipc
+ INCLUDES += -I$(SRCDIR)/public
+ 
+ ifeq ($(FORD_ECU),tcu)
+-LIBS += -ltelemetry
++LIBS += -ltelemetry -lvnmipc
+ else ifeq ($(FORD_ECU),sync)
+-LIBS += -ltelemetry
++LIBS += -ltelemetry -lvnmipc
+ endif
+ 
+ # add feature specific stuff
+@@ -93,13 +95,9 @@
+ SRCS += $(SRCDIR)/service/tcu_ipc/tcu_ipc_client.cpp
+ SRCS += $(SRCDIR)/service/tcu_ipc/tcu_ipc_utils.cpp
+ SRCS += $(SRCDIR)/service/tcu_ipc/service_cand.cpp
+-SRCS += $(SRCDIR)/service/tcu_ipc/service_spcm.cpp
+ SRCS += $(INSTALL_HDIR)/idl/cand/TcuIpcCand.pb.cc
+-SRCS += $(INSTALL_HDIR)/idl/spcm/TcuIpcSpcm.pb.cc
+-SRCS += $(INSTALL_HDIR)/idl/spcm/tcu_spcm_common.pb.cc
+ INCLUDES += -I$(SRCDIR)/service/tcu_ipc/
+ INCLUDES += -I$(INSTALL_HDIR)/idl
+-INCLUDES += -I${FORD_ECU_ROOT}/fnv/spcm/include
+ LIBS += -lprotobuf -ltcuipc-client -lwlanidl
+ CFLAGS += -DCONFIG_TCUIPC_FEATURE
+ endif
+diff -Ndur '--exclude=.git' ./test/makefile.linux /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/test/makefile.linux
+--- ./test/makefile.linux	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/test/makefile.linux	2018-04-12 11:15:03.980000000 -0400
+@@ -1 +1 @@
+-LIBS += -lpthread
++LIBS += -lpthread -lrt
+diff -Ndur '--exclude=.git' ./test/makefile.qnx /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/test/makefile.qnx
+--- ./test/makefile.qnx	2018-04-12 10:31:17.292000000 -0400
++++ /home/kjohn402/Projects/workspace/apps_proc/vendor/ford/fnv/wlan_service/test/makefile.qnx	2018-04-12 11:15:03.980000000 -0400
+@@ -1 +1 @@
+-LIBS += -lsocket
++LIBS += -lsocket -lmq

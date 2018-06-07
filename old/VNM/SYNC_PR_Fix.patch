@@ -1,0 +1,267 @@
+diff --git a/public/wlan_data_types.hpp b/public/wlan_data_types.hpp
+index 6876fae..c104b5e 100644
+--- a/public/wlan_data_types.hpp
++++ b/public/wlan_data_types.hpp
+@@ -786,29 +786,6 @@ typedef struct WlanProfile {
+ 
+ /**
+  *
+- * @brief Structure used to update Role Servers with IP Address changes
+- *
+- * @details Used by Vmn_ipc to update Roles when a IP Address is changed or modified
+- *
+- */
+-typedef struct WlanIpAddrUpdate {
+-    std::string         intf;       /**< Interface name that was Updated */
+-    Ipv4AddrType        ipv4AddrType = {Ipv4AddrType::DhcpClient};           /**< Type of IPv4 Addressing */
+-    union ipv4 {
+-        ipv4Addr_t      staticIpv4;             /**< static IPv4 Settings */
+-        ipv4() {memset(this, 0, sizeof(ipv4));};
+-    } ipv4;
+-    // UnComment when IPv6 is supported
+-    //Ipv6AddrType        ipv6AddrType = {Ipv6AddrType::None};           /**< IPv6 Addressing */
+-    //union ipv6 {
+-    //    ipv6Addr_t      staticIpv6;             /**< static IPv6 Settings */
+-    //    ipv6() {memset(this, 0, sizeof(ipv6));};
+-    //} ipv6;
+-} WlanIpAddrUpdate_t;
+-
+-
+-/**
+- *
+  * @brief Structure used to define the configuration of AP role
+  *
+  * @details Used to define the configuration of the AP role.
+diff --git a/service/utils/wlan_action/wlan_action.hpp b/service/utils/wlan_action/wlan_action.hpp
+index 020919c..192ea68 100644
+--- a/service/utils/wlan_action/wlan_action.hpp
++++ b/service/utils/wlan_action/wlan_action.hpp
+@@ -199,6 +199,30 @@ enum class WlanActionSource
+     SrcMax
+ };
+ 
++/**
++ *
++ * @brief Structure used to update Role Servers with IP Address changes
++ *
++ * @details Used by Vmn_ipc to update Roles when a IP Address is changed or modified
++ *
++ */
++typedef struct WlanIpAddrUpdate {
++    std::string         intf;       /**< Interface name that was Updated */
++    Ipv4AddrType        ipv4AddrType = {Ipv4AddrType::DhcpClient};           /**< Type of IPv4 Addressing */
++    union ipv4 {
++        ipv4Addr_t      staticIpv4;             /**< static IPv4 Settings */
++        ipv4() {memset(this, 0, sizeof(ipv4));};
++    } ipv4;
++    // UnComment when IPv6 is supported
++    //Ipv6AddrType        ipv6AddrType = {Ipv6AddrType::None};           /**< IPv6 Addressing */
++    //union ipv6 {
++    //    ipv6Addr_t      staticIpv6;             /**< static IPv6 Settings */
++    //    ipv6() {memset(this, 0, sizeof(ipv6));};
++    //} ipv6;
++} WlanIpAddrUpdate_t;
++
++
++
+ // TODO: add doxygen
+ typedef std::function<void(void*)> wlanActionCb_t;
+ /******************************************************************************/
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 6a2176c..97a0e8f 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -15,8 +15,18 @@
+ 
+ /* INCLUDES *******************************************************************/
+ #include <sys/socket.h>
++#include <ifaddrs.h>
++
++#ifdef WLAN_TCU
+ #include <linux/netlink.h>
+ #include <linux/rtnetlink.h>
++#endif /* WLAN_TCU */
++
++#ifdef WLAN_SYNC4
++#include <net/if.h>
++#include <net/route.h>
++#endif /* WLAN_SYNC4 */
++
+ #include <arpa/inet.h>
+ #include "wlan_srv-logger.hpp"
+ #include "vnm/vnmipcif.hpp"
+@@ -91,7 +101,9 @@ bool VnmIpc::start()
+     int pipeFd[2] = {-1, -1};
+     bool rc = false;
+     int ret = 0;
++#ifdef WLAN_TCU
+     struct sockaddr_nl addr = {0};
++#endif /* WLAN_TCU */
+ 
+     ENTER();
+ 
+@@ -109,7 +121,13 @@ bool VnmIpc::start()
+     m_signalPipeRead = pipeFd[0];
+     m_signalPipeWrite = pipeFd[1];
+ 
++#ifdef WLAN_TCU
+     m_signalIntfUpdate = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
++#endif /* WLAN_TCU */
++
++#ifdef WLAN_SYNC4
++    m_signalIntfUpdate = socket(PF_ROUTE, SOCK_RAW, 0);
++#endif /* WLAN_SYNC4 */
+     if (m_signalIntfUpdate < 0) {
+         ERROR("Failed to open network socket\n");
+         rc = false;
+@@ -118,6 +136,7 @@ bool VnmIpc::start()
+         DEBUG("Successfully opened socket, fd - %d\n", m_signalIntfUpdate);
+     }
+ 
++#ifdef WLAN_TCU
+     addr.nl_family = AF_NETLINK;
+     addr.nl_groups = RTMGRP_IPV4_IFADDR;
+ 
+@@ -129,6 +148,7 @@ bool VnmIpc::start()
+     } else {
+         DEBUG("Successfully Bind'ed the IntfUpdate pipe\n");
+     }
++#endif /* WLAN_TCU */
+ 
+     m_vnmIpcRetCode = m_vnmIpcInstance.initialize(m_vnmIpcId);
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+@@ -620,6 +640,88 @@ bool VnmIpc::checkIntfIpAddress()
+     bool rc = false;
+     WlanContext_t *ctx = NULL;
+     WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
++    char buf[4096];
++    int ret = 0;
++    struct ifaddrs *ifaddr = NULL;
++    struct ifaddrs *ifa = NULL;
++    char *ipAddrString;
++    //std::string ipAddrString;
++    struct sockaddr_in *sockAddr;
++
++    ENTER();
++
++    ctx = (WlanContext_t *)m_globalCtx;
++    //nlh = (struct nlmsghdr *)buf;
++    ipAddrUpdate = new WlanIpAddrUpdate_t();
++
++    ret = recv(m_signalIntfUpdate, buf, 4096, 0);
++    if (ret < 0) {
++        ERROR("Failed to read from recv for m_signalIntfUpdate\n");
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully cleared recv for m_signalIntfUpdate\n");
++    }
++
++    ret = getifaddrs(&ifaddr);
++    if (ret == -1) {
++        ERROR("failed to get interfaces info - %s\n", strerror(errno));
++        goto LEAVE;
++    }
++
++    /* check that the Interface changed is one we are monitoring and update accordingly if yes */
++    for (auto iter = m_intfs.begin(); iter != m_intfs.end(); iter++) {
++        DEBUG("Looking for intf = %s\n", iter->intf.c_str());
++        /* iterate through the list of interfaces for the interface with our name */
++        for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
++            if (ifa->ifa_addr->sa_family==AF_INET) {
++            if (strncmp(iter->intf.c_str(), ifa->ifa_name, IFNAMSIZ) == 0) {
++                DEBUG("found an interface (%s) we are monitoring, checking Address updates\n", iter->intf.c_str());
++                sockAddr = (struct sockaddr_in *) ifa->ifa_addr;
++                ipAddrString = inet_ntoa(sockAddr->sin_addr);
++                if (iter->hasIpAddr == false || iter->ipAddr != ipAddrString) {
++                    DEBUG("%s been assigned an IP address or the current address has been updated\n",
++                            iter->intf.c_str());
++                    /* check that ip address recv from the socket is a valid one */
++                    if (inet_pton(AF_INET, ipAddrString, &(sockAddr->sin_addr)) > 0) {
++                        DEBUG("%s was assigned ip address of %s\n", iter->intf.c_str(),ipAddrString);
++                        iter->hasIpAddr = true;
++                        iter->ipAddr = ipAddrString;
++
++                        DEBUG("Create wlan_action so that wlan_srv can update all roles\n");
++                        ipAddrUpdate->intf = iter->intf;
++                        strncpy(ipAddrUpdate->ipv4.staticIpv4.ip, ipAddrString, WLAN_IP_LEN);
++
++                        WlanAction *new_action = new WlanAction {
++                                WlanActionType::WlanSrvTypeIpAddrUpdate,
++                                WlanActionSource::SrcInternal};
++                        new_action->pack(*ipAddrUpdate);
++                        (ctx->wlan_srv)->queueAction(new_action);
++                    }
++                } else {
++                    DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
++                } /* if (iter->hasIpAddr...) */
++                break; //change to goto??
++            } /* if (strncmp(iter->....)) */
++            } /* if (ifa->ifa_addr....) */
++        } /* for (ifa...) */
++    } /* for (auto iter...) */
++
++    rc = true;
++
++LEAVE:
++    EXIT();
++    return(rc);
++} /* VnmIpc::checkIntfIpAddress() */
++
++
++
++/*
++bool VnmIpc::checkIntfIpAddress()
++{
++    bool rc = false;
++    WlanContext_t *ctx = NULL;
++    WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
+     struct nlmsghdr *nlh = NULL;
+     char buf[4096];
+     int ret = 0;
+@@ -648,7 +750,7 @@ bool VnmIpc::checkIntfIpAddress()
+     ifa = (struct ifaddrmsg *) NLMSG_DATA(nlh);
+     rth = IFA_RTA(ifa);
+ 
+-    /* Convert the raw Interface name and Ip Address to strings for comparison */
++    / * Convert the raw Interface name and Ip Address to strings for comparison * /
+     if_indextoname(ifa->ifa_index, intName);
+     ipAddrRaw = htonl(*((uint32_t *)RTA_DATA(rth)));
+     sprintf(ipAddrString,"%d.%d.%d.%d", (ipAddrRaw >> 24) & 0xff,
+@@ -656,7 +758,7 @@ bool VnmIpc::checkIntfIpAddress()
+                                         (ipAddrRaw >> 8) & 0xff,
+                                          ipAddrRaw & 0xff);
+ 
+-    /* check that the Interface changed is one we are monitoring and update accordingly if yes */
++    / * check that the Interface changed is one we are monitoring and update accordingly if yes * /
+     for (auto iter = m_intfs.begin();
+               iter != m_intfs.end();
+               iter++) {
+@@ -665,7 +767,7 @@ bool VnmIpc::checkIntfIpAddress()
+             if (iter->hasIpAddr == false || iter->ipAddr != ipAddrString) {
+                 DEBUG("%s been assigned an IP address or the current address has been updated\n",
+                         iter->intf.c_str());
+-                /* check that ip address recv from the socket is a valid one */
++                / * check that ip address recv from the socket is a valid one * /
+                 if (inet_pton(AF_INET, ipAddrString, &(sa.sin_addr)) > 0) {
+                     DEBUG("%s was assigned ip address of %s\n", iter->intf.c_str(),ipAddrString);
+                     iter->hasIpAddr = true;
+@@ -685,15 +787,15 @@ bool VnmIpc::checkIntfIpAddress()
+                 DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
+             }
+             break;
+-        } /* if */
+-    } /* for() */
++        } / * if * /
++    } / * for() * /
+ 
+     rc = true;
+ 
+ LEAVE:
+     EXIT();
+     return(rc);
+-} /* VnmIpc::checkIntfIpAddress() */
++} / * VnmIpc::checkIntfIpAddress() */
+ /******************************************************************************/
+ } /* wlan*/
+ /******************************************************************************/

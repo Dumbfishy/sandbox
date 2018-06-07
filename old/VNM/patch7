@@ -1,0 +1,309 @@
+commit 013ba73777873322a4a01dd7774ab516535eee33
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Fri Apr 6 13:40:49 2018 -0400
+
+    Some comment clean up and extra if checks
+
+diff --git a/service/main.cpp b/service/main.cpp
+index f9b2f33..38d0ca7 100644
+--- a/service/main.cpp
++++ b/service/main.cpp
+@@ -1007,6 +1007,7 @@ static void demoModeWstasConnect(WlanContext_t *ctx)
+     profile->sec.wpaPsk.password[8] = '\0';
+     profile->sec.wpaPsk.pairCipher = PairwiseCipher::Ccmp;
+     profile->sec.wpaPsk.groupCipher = GroupCipher::Ccmp;
++    //profile->ipv4AddrType = Ipv4AddrType::DhcpClient;
+     profile->ipv4AddrType = Ipv4AddrType::Static;
+     strncpy(profile->ipv4.staticIpv4.ip, "192.168.1.149",
+             sizeof(profile->ipv4.staticIpv4.ip));
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 5afb77e..faa444e 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -77,6 +77,7 @@ VnmIpc::~VnmIpc()
+ 
+     m_signalPipeRead = 0;
+     m_signalPipeWrite = 0;
++    m_signalIntfUpdate = 0;
+ 
+     FD_ZERO(&m_rfds);
+     m_maxFd = 0;
+@@ -169,19 +170,27 @@ bool VnmIpc::stop()
+         close(m_signalPipeWrite);
+     }
+ 
+-    /*
+-    // TODO: stop any resources we started
+-    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode("intf\n"); //this should be from the inft_list
+-    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+-        ERROR("Failed to set DHCP Idle Mode for vnm_ipc\n");
+-        rc = false;
+-        goto LEAVE;
++    if (m_signalIntfUpdate >= 0) {
++        close(m_signalIntfUpdate);
+     }
+-    */
++
++    for (auto iter = m_intfs.begin();
++              iter != m_intfs.end();
++              iter++) {
++
++        // TODO: stop any resources we started
++        m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode(iter->intf);
++        if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++            ERROR("Failed to set DHCP Idle Mode for vnm_ipc\n");
++            rc = false;
++            goto LEAVE;
++        }
++    } /* for() */
++
+     INFO("Successfully stopped vnm_ipc\n");
+     rc = true;
+ 
+-//LEAVE:
++LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::stop() */
+@@ -231,6 +240,7 @@ void VnmIpc::setupRfds(void)
+ 
+     FD_ZERO(&m_rfds);
+     FD_SET(m_signalPipeRead, &m_rfds);
++    //TODO: DEBUG -> TRACE
+     DEBUG("Added fd = %d to rfds\n", m_signalPipeRead);
+     FD_SET(m_signalIntfUpdate, &m_rfds);
+     DEBUG("Added fd = %d to rfds\n", m_signalIntfUpdate);
+@@ -250,17 +260,19 @@ void VnmIpc::handleFdsReady(void)
+ {
+     int rc = 0;
+     uint8_t buf = 0;
++    bool ret = false;
+ 
+     ENTER();
+ 
+-    //TODO: there is data to read on one of our fds, figure out which one, then
+-    // call into a function to do a generic read of the fd to clear the new data
+-    // If the data is on the pipe send it off to the handlePipeRead()
+-
+     /* first check if our pipe has anything */
+     if (FD_ISSET(m_signalPipeRead, &m_rfds)) {
+         DEBUG("Data is ready on readPipe\n");
+-        selectVnmCall();
++        ret = selectVnmCall();
++        if (ret == false) {
++            DEBUG("selectVnmCall() failed\n");
++        } else {
++            DEBUG("selectVnmCall() succeced\n");
++        }
+ 
+         //TODO: read is not immediatly clearing the FD - select is called 2-3 times after
+         //the clear
+@@ -272,12 +284,11 @@ void VnmIpc::handleFdsReady(void)
+         }
+     } else if (FD_ISSET(m_signalIntfUpdate, &m_rfds)) {
+         DEBUG("Data is ready on IntfUpdate\n");
+-        checkIntfIpAddress();
+-        rc = read(m_signalIntfUpdate, (void *)(&buf), sizeof(buf));
+-        if (rc < 0) {
+-            ERROR("Failed to read from IntfUpdate pipe - %s\n", strerror(errno));
++        ret = checkIntfIpAddress();
++        if (ret == false) {
++            DEBUG("checkIntfAddress() failed\n");
+         } else {
+-            DEBUG("Successfully cleared the IntfUpdate pipe - %d\n", buf);
++            DEBUG("checkIntfAddress() succeced\n");
+         }
+     }
+ 
+@@ -307,18 +318,6 @@ bool VnmIpc::signalVnmIpc(void)
+ } /* VnmIpc::signalVnmIpc() */
+ 
+ 
+-void VnmIpc::handlePipeRead()
+-{
+-    ENTER();
+-
+-    // TODO: use this function to handle when there is data on the pipe...aka
+-    // clear the pipe, go through m_intfs and look for new entries, open any
+-    // and all fds that will be used to monitor for ip address changes.
+-
+-    EXIT();
+-} /* VnmIpc::handlePipeRead() */
+-
+-
+ bool VnmIpc::clearIpv4(const char *intf)
+ {
+     bool rc = false;
+@@ -427,6 +426,7 @@ bool VnmIpc::requestDhcpServer(const char *intf /* server config */)
+     vnmRequest.intf = intString;
+     vnmRequest.type = VnmIpcReqType::RequestDhcpServer;
+     //TODO: update request with Server Config info
++    //      Tracked with TCU-4866
+     vnmRequest.ipv4Type = Ipv4AddrType::None;
+     vnmRequest.ipv6Type = Ipv6AddrType::None;
+ 
+@@ -461,7 +461,7 @@ bool VnmIpc::checkIntfList(std::string intf)
+                   iter != m_intfs.end();
+                   iter++) {
+             if (strncmp(iter->intf.c_str(),intf.c_str(),intf.length()) == 0) {
+-                DEBUG("Interface fd already present in list\n");
++                DEBUG("Interface was already present in list\n");
+                 break;
+             } /* if */
+         } /* for() */
+@@ -540,6 +540,8 @@ bool VnmIpc::handleClearIpv4(VnmIpcReq_t vnmRequest)
+     }
+     rc = true;
+ 
++    //TODO: Remove the interface from our VNM_IPC interface list?
++
+ LEAVE:
+     EXIT();
+     return(rc);
+@@ -573,19 +575,17 @@ LEAVE:
+ bool VnmIpc::handleRequestStaticIpv4(VnmIpcReq_t vnmRequest)
+ {
+     bool rc = false;
+-    std::string ipAddr("192.168.1.1");
+ 
+     ENTER();
+ 
+     INFO("handling vnm_ipc requestStaticIpv4() request\n");
+     checkIntfList(vnmRequest.intf);
+ 
+-    //TODO: Pull the ip address out of vnmRequest and set to ipAddr string
+-
+-    m_vnmIpcRetCode = m_vnmIpcInstance.setStaticIpAddress(vnmRequest.intf, ipAddr);
++    m_vnmIpcRetCode = m_vnmIpcInstance.setStaticIpAddress(vnmRequest.intf,
++                                                          vnmRequest.ipv4.staticAddr.ip);
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+         ERROR("Failed to set %s with Static Ip %s using vnm_ipc\n",
+-              vnmRequest.intf.c_str(), ipAddr.c_str());
++              vnmRequest.intf.c_str(), vnmRequest.ipv4.staticAddr.ip);
+         rc = false;
+         goto LEAVE;
+     }
+@@ -632,8 +632,8 @@ bool VnmIpc::checkIntfIpAddress()
+     ENTER();
+ 
+     ctx = (WlanContext_t *)m_globalCtx;
+-
+     nlh = (struct nlmsghdr *)buf;
++
+     ret = recv(m_signalIntfUpdate, nlh, 4096, 0);
+     if (ret < 0) {
+         ERROR("Failed to read from recv for m_signalIntfUpdate\n");
+@@ -645,28 +645,29 @@ bool VnmIpc::checkIntfIpAddress()
+ 
+     ifa = (struct ifaddrmsg *) NLMSG_DATA(nlh);
+     rth = IFA_RTA(ifa);
+-    ipAddrRaw = htonl(*((uint32_t *)RTA_DATA(rth)));
+ 
++    /* Convert the raw Interface name and Ip Address to strings for comparison */
+     if_indextoname(ifa->ifa_index, intName);
+-
++    ipAddrRaw = htonl(*((uint32_t *)RTA_DATA(rth)));
+     sprintf(ipAddrString,"%d.%d.%d.%d", (ipAddrRaw >> 24) & 0xff,
+                                         (ipAddrRaw >> 16) & 0xff,
+                                         (ipAddrRaw >> 8) & 0xff,
+                                          ipAddrRaw & 0xff);
+ 
++    //DEBUG("Interface name is %s\n", intName);
+ 
+-    DEBUG("Interface name is %s\n", intName);
+-
++    /* check that the Interface changed is one we are monitoring and update accordingly if yes */
+     for (auto iter = m_intfs.begin();
+               iter != m_intfs.end();
+               iter++) {
+-        if (strncmp(iter->intf.c_str(),intName,iter->intf.length()) == 0) {
++        if (strncmp(iter->intf.c_str(), intName, iter->intf.length()) == 0) {
+             DEBUG("There was a change to an Interface we are monitoring - %s\n", iter->intf.c_str());
+-            if (iter->hasIpAddr == false) {
+-                DEBUG("%s currently does not have an IP addr, checking if one is assigned\n",
++            if (iter->hasIpAddr == false || iter->ipAddr != ipAddrString) {
++                DEBUG("%s been assigned an IP address or the current address has been updated\n",
+                         iter->intf.c_str());
++                /* check that ip address recv from the socket is a valid one */
+                 if (inet_pton(AF_INET, ipAddrString, &(sa.sin_addr)) > 0) {
+-                    DEBUG("%s was assiged ip address of %s\n", iter->intf.c_str(),ipAddrString);
++                    DEBUG("%s was assigned ip address of %s\n", iter->intf.c_str(),ipAddrString);
+                     iter->hasIpAddr = true;
+                     iter->ipAddr = ipAddrString;
+ 
+@@ -676,7 +677,6 @@ bool VnmIpc::checkIntfIpAddress()
+                     };
+                     (ctx->wstas)->queueAction(new_action);
+                 }
+-                //TODO: check for IP and send action
+             } else {
+                 DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
+             }
+diff --git a/service/vnm_ipc/vnm_ipc.hpp b/service/vnm_ipc/vnm_ipc.hpp
+index 90c2e28..575a10e 100644
+--- a/service/vnm_ipc/vnm_ipc.hpp
++++ b/service/vnm_ipc/vnm_ipc.hpp
+@@ -135,11 +135,6 @@ class VnmIpc
+         void handleFdsReady(void);
+ 
+         /*
+-         * handles when we have something on our read pipe
+-         */
+-        void handlePipeRead(void);
+-
+-        /*
+          * helper function that abstracts signalling the vnm_ipc thread via
+          * the pipe.
+          */
+diff --git a/service/wstas/wstas.cpp b/service/wstas/wstas.cpp
+index eb66c11..6f3a3ad 100644
+--- a/service/wstas/wstas.cpp
++++ b/service/wstas/wstas.cpp
+@@ -1411,7 +1411,6 @@ void Wstas::handleEventScanResults(WlanAction *action)
+ int Wstas::setIpv4AddressStatic(ipv4Addr_t ip)
+ {
+ #ifndef OFF_TARGET_BUILD
+-//    const char ifconfigCmd[MAX_LEN_START_CMD] = {'\0'};
+     WlanContext_t* ctx = NULL;
+     std::string ifname;
+     int rc = 0;
+@@ -1421,31 +1420,8 @@ int Wstas::setIpv4AddressStatic(ipv4Addr_t ip)
+     (ctx->wpa_supp)->interface(ifname);
+     // TODO: handle this error
+ 
+-    /*
+-     * TODO: call API to set interface with static IP...sendMsg(???)
+-     * Temporary solution is to do it ourselves until VNM API is
+-     * available
+-     */
+-
+     ctx->vnm_ipc->requestStaticIpv4(ifname.c_str(), ip);
+     INFO("Called into VMN_IPC STATIC");
+-
+-    /*
+-    INFO("Setting static IP address on interface = %s\n", ifname.c_str());
+-    rc = snprintf((char*)ifconfigCmd, MAX_LEN_START_CMD,
+-            "ifconfig %s %s netmask %s",
+-            ifname.c_str(),
+-            ip.ip,
+-            ip.netmask);
+-
+-    rc = os_system(ifconfigCmd);
+-    if (rc) {
+-        ERROR("Failed to set IP address with \"%s\" - %d\n", ifconfigCmd, rc);
+-        rc = -1;
+-    } else {
+-        INFO("Successfully set static IP address - \"%s\"\n", ifconfigCmd);
+-    }
+-    */
+ #else
+     int rc = 0;
+     std::string ifname;
+@@ -1456,7 +1432,6 @@ int Wstas::setIpv4AddressStatic(ipv4Addr_t ip)
+     (ctx->wpa_supp)->interface(ifname);
+     INFO("Called into VMN_IPC STATIC\n");
+     ctx->vnm_ipc->requestStaticIpv4(ifname.c_str(), ip);
+-    WARN("Skipping static IP addressing for off-target mode\n");
+ #endif /* OFF_TARGET_BUILD */
+ 
+     EXIT();

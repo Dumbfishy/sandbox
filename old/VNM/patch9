@@ -1,0 +1,409 @@
+commit 291b28592e97a0af07d3fd8134684b90fc3cae85
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Sun Apr 8 01:02:47 2018 -0400
+
+    Created WlanAction for IpAddrUpdate
+
+diff --git a/public/wlan_data_types.hpp b/public/wlan_data_types.hpp
+index c104b5e..6876fae 100644
+--- a/public/wlan_data_types.hpp
++++ b/public/wlan_data_types.hpp
+@@ -786,6 +786,29 @@ typedef struct WlanProfile {
+ 
+ /**
+  *
++ * @brief Structure used to update Role Servers with IP Address changes
++ *
++ * @details Used by Vmn_ipc to update Roles when a IP Address is changed or modified
++ *
++ */
++typedef struct WlanIpAddrUpdate {
++    std::string         intf;       /**< Interface name that was Updated */
++    Ipv4AddrType        ipv4AddrType = {Ipv4AddrType::DhcpClient};           /**< Type of IPv4 Addressing */
++    union ipv4 {
++        ipv4Addr_t      staticIpv4;             /**< static IPv4 Settings */
++        ipv4() {memset(this, 0, sizeof(ipv4));};
++    } ipv4;
++    // UnComment when IPv6 is supported
++    //Ipv6AddrType        ipv6AddrType = {Ipv6AddrType::None};           /**< IPv6 Addressing */
++    //union ipv6 {
++    //    ipv6Addr_t      staticIpv6;             /**< static IPv6 Settings */
++    //    ipv6() {memset(this, 0, sizeof(ipv6));};
++    //} ipv6;
++} WlanIpAddrUpdate_t;
++
++
++/**
++ *
+  * @brief Structure used to define the configuration of AP role
+  *
+  * @details Used to define the configuration of the AP role.
+diff --git a/service/utils/wlan_action/wlan_action.cpp b/service/utils/wlan_action/wlan_action.cpp
+index ba99413..bd58a79 100644
+--- a/service/utils/wlan_action/wlan_action.cpp
++++ b/service/utils/wlan_action/wlan_action.cpp
+@@ -90,6 +90,7 @@ WlanAction::~WlanAction()
+     cleanUpInteger();
+     cleanUpScanRes();
+     cleanUpProfile();
++    cleanUpIpAddrUpdate();
+ 
+     if (m_data_cb) {
+         DEBUG("Removing packed data from wlan_action id= %lu\n", m_id);
+@@ -403,6 +404,9 @@ const char* WlanAction::getTypeStr()
+     case (WlanActionType::WlanSrvTypeEcallDone):
+         str = "Wlan_Srv Ecall Done";
+         break;
++    case (WlanActionType::WlanSrvTypeIpAddrUpdate):
++        str = "Wlan_Srv IP Address Update";
++        break;
+     case (WlanActionType::WlanSrvTypeMax):
+         str = "WlanSrv Max";
+         break;
+@@ -451,6 +455,9 @@ const char* WlanAction::getTypeStr()
+     case (WlanActionType::WstasTypeIpAddrError):
+         str = "WSTAS IP Addr Error";
+         break;
++    case (WlanActionType::WstasTypeIpAddrUpdate):
++        str = "WSTAS IP Address Update";
++        break;
+     case (WlanActionType::WstasTypeDisconnect):
+         str = "WSTAS Disconnect";
+         break;
+@@ -523,6 +530,9 @@ const char* WlanAction::getTypeStr()
+     case (WlanActionType::WhssTypeIpAddressSetupComplete):
+         str = "WHSS IP Address Setup Complete";
+         break;
++    case (WlanActionType::WhssTypeIpAddrUpdate):
++        str = "WHSS IP Address Update";
++        break;
+     case (WlanActionType::WhssTypeDhcpServerSetupStart):
+         str = "WHSS DHCP Server Setup Start";
+         break;
+@@ -601,6 +611,9 @@ const char* WlanAction::getTypeStr()
+     case (WlanActionType::WapsTypeErrorDone):
+         str = "WAPS Error Done";
+         break;
++    case (WlanActionType::WapsTypeIpAddrUpdate):
++        str = "WAPS IP Address Update";
++        break;
+     case (WlanActionType::WapsTypeApBroadcasting):
+         str = "WAPS Max";
+         break;
+@@ -816,6 +829,7 @@ WlanActionSubType WlanAction::determineSubType(WlanActionType type)
+     case (WlanActionType::WlanSrvTypeMasterResetDone):
+     case (WlanActionType::WlanSrvTypeEcall):
+     case (WlanActionType::WlanSrvTypeEcallDone):
++    case (WlanActionType::WlanSrvTypeIpAddrUpdate):
+     case (WlanActionType::WlanSrvTypeStart):
+     case (WlanActionType::WlanSrvTypeStop):
+     case (WlanActionType::WstasTypeConnecting):
+@@ -827,6 +841,7 @@ WlanActionSubType WlanAction::determineSubType(WlanActionType type)
+     case (WlanActionType::WstasTypeAuthenticated):
+     case (WlanActionType::WstasTypeIpAddrCmplt):
+     case (WlanActionType::WstasTypeIpAddrError):
++    case (WlanActionType::WstasTypeIpAddrUpdate):
+     case (WlanActionType::WstasTypeDisconnecting):
+     case (WlanActionType::WstasTypeDisconnected):
+     case (WlanActionType::WstasTypeStart):
+@@ -847,6 +862,7 @@ WlanActionSubType WlanAction::determineSubType(WlanActionType type)
+     case (WlanActionType::WhssTypeApBroadcasting):
+     case (WlanActionType::WhssTypeIpAddressSetupStart):
+     case (WlanActionType::WhssTypeIpAddressSetupComplete):
++    case (WlanActionType::WhssTypeIpAddrUpdate):
+     case (WlanActionType::WhssTypeDhcpServerSetupStart):
+     case (WlanActionType::WhssTypeDhcpServerSetupComplete):
+     case (WlanActionType::WhssTypeApnSetupStart):
+@@ -869,6 +885,7 @@ WlanActionSubType WlanAction::determineSubType(WlanActionType type)
+     case (WlanActionType::WapsTypeStopDone):
+     case (WlanActionType::WapsTypeError):
+     case (WlanActionType::WapsTypeErrorDone):
++    case (WlanActionType::WapsTypeIpAddrUpdate):
+     case (WlanActionType::WapsTypeApBroadcasting):
+         subType = WlanActionSubType::SubTypeEvent;
+         break;
+@@ -1075,6 +1092,41 @@ void WlanAction::cleanUpProfile()
+     EXIT();
+     return;
+ } /* WlanAction::cleanUpProfile() */
++
++
++void WlanAction::pack(WlanIpAddrUpdate_t &ipAddrUpdate)
++{
++    ENTER();
++
++    m_ipAddrUpdate = ipAddrUpdate;
++
++    EXIT();
++    return;
++} /* WlanAction::unpack(WlanIpAddrUpdate_t &ipAddrUpdate) */
++
++
++void WlanAction::unpack(WlanIpAddrUpdate_t *ipAddrUpdate)
++{
++    ENTER();
++
++    *ipAddrUpdate = m_ipAddrUpdate;
++
++    EXIT();
++    return;
++} /* WlanAction::unpack(WlanIpAddrUpdate_t *ipAddrUpdate) */
++
++
++void WlanAction::cleanUpIpAddrUpdate()
++{
++    ENTER();
++
++    m_ipAddrUpdate.intf.empty();
++    m_ipAddrUpdate.ipv4AddrType = {Ipv4AddrType::None};
++    memset(&m_ipAddrUpdate.ipv4, 0x0, sizeof(m_ipAddrUpdate.ipv4));
++
++    EXIT();
++    return;
++} /* WlanAction::cleanUpIpAddrUpdate() */
+ /******************************************************************************/
+ 
+ }; /* wlan */
+diff --git a/service/utils/wlan_action/wlan_action.hpp b/service/utils/wlan_action/wlan_action.hpp
+index 7674aeb..98153ba 100644
+--- a/service/utils/wlan_action/wlan_action.hpp
++++ b/service/utils/wlan_action/wlan_action.hpp
+@@ -56,6 +56,7 @@ enum class WlanActionType
+     WlanSrvTypeMasterResetDone,
+     WlanSrvTypeEcall,
+     WlanSrvTypeEcallDone,
++    WlanSrvTypeIpAddrUpdate,
+     WlanSrvTypeMax = 30000,
+     /* wstas */
+     WstasTypeMin = 30001,
+@@ -72,6 +73,7 @@ enum class WlanActionType
+     WstasTypeAuthenticated,  /* !! netwrok auth NOT AP auth */
+     WstasTypeIpAddrCmplt,
+     WstasTypeIpAddrError,
++    WstasTypeIpAddrUpdate,
+     WstasTypeDisconnect,
+     WstasTypeDisconnecting,
+     WstasTypeDisconnected,
+@@ -92,6 +94,7 @@ enum class WlanActionType
+     WhssTypeApBroadcasting,
+     WhssTypeIpAddressSetupStart,
+     WhssTypeIpAddressSetupComplete,
++    WhssTypeIpAddrUpdate,
+     WhssTypeDhcpServerSetupStart,
+     WhssTypeDhcpServerSetupComplete,
+     WhssTypeApnSetupStart,
+@@ -125,8 +128,9 @@ enum class WlanActionType
+     WapsTypeStopDone,
+     WapsTypeError,
+     WapsTypeErrorDone,
++    WapsTypeIpAddrUpdate,
+     WapsTypeApBroadcasting,
+-    WapsTypeMax,
++    WapsTypeMax = 60000,
+     /* Bts */
+     BtsTypeMin = 60001,
+     BtsTypeRequestFw,
+@@ -221,6 +225,9 @@ class WlanAction
+         void pack(WlanProfile_t &profile);
+         void unpack(WlanProfile_t *profile);
+ 
++        void pack(WlanIpAddrUpdate_t &ipAddrUpdate);
++        void unpack(WlanIpAddrUpdate_t *ipAddrUpdate);
++
+         void setStartCb(wlanActionCb_t);
+         void setEndCb(wlanActionCb_t);
+ 
+@@ -287,6 +294,9 @@ class WlanAction
+ 
+         WlanProfile_t m_profile;
+         void cleanUpProfile();
++
++        WlanIpAddrUpdate_t m_ipAddrUpdate;
++        void cleanUpIpAddrUpdate();
+ };
+ 
+ 
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 278a7f3..c6a1f23 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -275,7 +275,7 @@ void VnmIpc::handleFdsReady(void)
+         }
+ 
+         //TODO: read is not immediatly clearing the FD - select is called 2-3 times after
+-        //the clear
++        //the clear --Need to completely clear the read buffer to get the FD to set to 0
+         rc = read(m_signalPipeRead, (void *)(&buf), sizeof(buf));
+         if (rc < 0) {
+             ERROR("Failed to read from wake-up pipe - %s\n", strerror(errno));
+@@ -620,7 +620,7 @@ bool VnmIpc::checkIntfIpAddress()
+ {
+     bool rc = false;
+     WlanContext_t *ctx = NULL;
+-    WlanAction* new_action = NULL;
++    WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
+     struct nlmsghdr *nlh = NULL;
+     char buf[4096];
+     int ret = 0;
+@@ -635,6 +635,7 @@ bool VnmIpc::checkIntfIpAddress()
+ 
+     ctx = (WlanContext_t *)m_globalCtx;
+     nlh = (struct nlmsghdr *)buf;
++    ipAddrUpdate = new WlanIpAddrUpdate_t();
+ 
+     ret = recv(m_signalIntfUpdate, nlh, 4096, 0);
+     if (ret < 0) {
+@@ -671,12 +672,15 @@ bool VnmIpc::checkIntfIpAddress()
+                     iter->hasIpAddr = true;
+                     iter->ipAddr = ipAddrString;
+ 
+-                    //TODO: Make this a general wlan_srv IPaddrComplete Action
+-                    new_action = new WlanAction {
+-                            WlanActionType::WstasTypeIpAddrCmplt,
+-                            WlanActionSource::SrcInternal,
+-                    };
+-                    (ctx->wstas)->queueAction(new_action);
++                    DEBUG("Create wlan_action so that wlan_srv can update all roles\n");
++                    ipAddrUpdate->intf = iter->intf;
++                    strncpy(ipAddrUpdate->ipv4.staticIpv4.ip, ipAddrString, sizeof(ipAddrString));
++
++                    WlanAction *new_action = new WlanAction {
++                            WlanActionType::WlanSrvTypeIpAddrUpdate,
++                            WlanActionSource::SrcInternal};
++                    new_action->pack(*ipAddrUpdate);
++                    (ctx->wlan_srv)->queueAction(new_action);
+                 }
+             } else {
+                 DEBUG("%s already has valid ip address of %s\n", iter->intf.c_str(), iter->ipAddr.c_str());
+diff --git a/service/wlan_srv/wlan_srv.cpp b/service/wlan_srv/wlan_srv.cpp
+index 4ed1d8a..0673b5f 100644
+--- a/service/wlan_srv/wlan_srv.cpp
++++ b/service/wlan_srv/wlan_srv.cpp
+@@ -277,18 +277,26 @@ int WlanSrv::processWlanAction(WlanAction *action)
+ 
+     switch (action->getGroup()) {
+     case (WlanActionGroup::GroupWlanSrv):
+-        action->startOfProcessing();
+-        if (StateMachine::handleEvent(action->getType())) {
+-            INFO("Successfully handled id = %s (%s)\n",
+-                    action->getIdStr().c_str(), action->getTypeStr());
+-            rc = 0;
++        //TODO: is this the proper way to handle IpAddrUpdate??
++        //      is a switch Statement better for future proofing?
++        //      does WlanSrvState need to be checked as well? or
++        //      is it handled above by the constructor?
++        if (action->getType() == WlanActionType::WlanSrvTypeIpAddrUpdate) {
++         handleIpAddrUpdate(action);
+         } else {
+-            ERROR("Failed to handle id = %s (%s)\n",
+-                    action->getIdStr().c_str(), action->getTypeStr());
+-            // TODO: properly handle this error
+-            rc = -1;
++            action->startOfProcessing();
++            if (StateMachine::handleEvent(action->getType())) {
++                INFO("Successfully handled id = %s (%s)\n",
++                        action->getIdStr().c_str(), action->getTypeStr());
++                rc = 0;
++            } else {
++                ERROR("Failed to handle id = %s (%s)\n",
++                        action->getIdStr().c_str(), action->getTypeStr());
++                // TODO: properly handle this error
++                rc = -1;
++            }
++            action->endOfProcessing();
+         }
+-        action->endOfProcessing();
+         break;
+ #ifdef CONFIG_WSTAS_FEATURE
+     case (WlanActionGroup::GroupWstas):
+@@ -327,7 +335,7 @@ int WlanSrv::processWlanAction(WlanAction *action)
+         case (WlanSrvState::Ecall):
+         case (WlanSrvState::Error):
+             /* reject as we can't process this at this time */
+-            ERROR("Unable to process WSTAS actions at this time\n");
++            ERROR("Unable to process WHSS actions at this time\n");
+             // TODO: add rejection code
+             action->setReturnCode(-1);
+             action->startOfProcessing();
+@@ -355,7 +363,7 @@ int WlanSrv::processWlanAction(WlanAction *action)
+         case (WlanSrvState::Ecall):
+         case (WlanSrvState::Error):
+             /* reject as we can't process this at this time */
+-            ERROR("Unable to process WSTAS actions at this time\n");
++            ERROR("Unable to process WAPS actions at this time\n");
+             // TODO: add rejection code
+             action->setReturnCode(-1);
+             action->startOfProcessing();
+@@ -564,6 +572,45 @@ int WlanSrv::HandleErrorToOff()
+ 
+ 
+ // TODO: add doxygen
++void WlanSrv::handleIpAddrUpdate(WlanAction *action)
++{
++    WlanContext_t *ctx = NULL;
++    WlanAction *new_action[3] = {NULL};
++    WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
++    int i = 0;
++
++    ENTER();
++
++    action->startOfProcessing();
++    ctx = (WlanContext *)m_globalCtx;
++
++    ipAddrUpdate = new WlanIpAddrUpdate_t();
++
++    INFO("Recieved wlanAction %s. Sending IpAddrUpdate to all roles\n",
++            action->getTypeStr());
++
++    action->unpack(ipAddrUpdate);
++
++    /* Create 3 IpAddrUpdates for each role, Wstas, Whss, Waps */
++    new_action[0] = new WlanAction {WlanActionType::WstasTypeIpAddrUpdate,
++                                          WlanActionSource::SrcInternal};
++    new_action[1] = new WlanAction {WlanActionType::WhssTypeIpAddrUpdate,
++                                          WlanActionSource::SrcInternal};
++    new_action[2] = new WlanAction {WlanActionType::WapsTypeIpAddrUpdate,
++                                          WlanActionSource::SrcInternal};
++
++    for (i = 0; i < 3; i++) {
++        new_action[i]->pack(*ipAddrUpdate);
++        (ctx->wlan_srv)->queueAction(new_action[i]);
++    }
++    action->endOfProcessing();
++
++    EXIT();
++    return;
++} /* WlanSrv::handleIpAddrUpdate(WlanAction *action) */
++
++
++// TODO: add doxygen
+ const char* WlanSrv::currentState()
+ {
+     const char *str = NULL;
+diff --git a/service/wlan_srv/wlan_srv.hpp b/service/wlan_srv/wlan_srv.hpp
+index 50daeb9..143c7fd 100644
+--- a/service/wlan_srv/wlan_srv.hpp
++++ b/service/wlan_srv/wlan_srv.hpp
+@@ -70,6 +70,8 @@ class WlanSrv : public util::StateMachine<WlanSrvState, WlanActionType>
+ 
+         int processWlanAction(WlanAction *action);
+ 
++        void handleIpAddrUpdate(WlanAction *action);
++
+         int HandleOffToOn();
+         int HandleOnToError();
+         int HandleOnToProvisioning();
+diff --git a/service/wstas/wstas.hpp b/service/wstas/wstas.hpp
+index 879b4bf..f6876e9 100644
+--- a/service/wstas/wstas.hpp
++++ b/service/wstas/wstas.hpp
+@@ -101,7 +101,8 @@ class Wstas : public util::StateMachine<StaSmState, WlanActionType>
+         int handleDisablingToError();
+         int handleErrorToOff();
+         int handleEventAuthenticated(WlanAction* action);
+-        void handleEventScanResults(WlanAction  *action);
++        void handleEventScanResults(WlanAction *action);
++        void handleEventIpAddrUpdate(WlanAction *action);
+ 
+         int setIpv4AddressStatic(ipv4Addr_t ip);
+         int setIpv4AddressDynamic();

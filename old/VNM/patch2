@@ -1,0 +1,303 @@
+commit d928b9f5f0d457ac4fd6aff4a329beb0c5f49167
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Mon Mar 26 16:39:16 2018 -0400
+
+    updated Makefiles to compile
+
+diff --git a/service/Makefile b/service/Makefile
+index e3e8299..fcd3f92 100644
+--- a/service/Makefile
++++ b/service/Makefile
+@@ -43,6 +43,7 @@ SRCS += wpa_supp/wpa_supp.cpp
+ SRCS += hostapd/hostapd.cpp
+ SRCS += hostapd/hostapd_cmds.cpp
+ SRCS += drv_ctrl/drv_ctrl.cpp
++SRCS += vnm_ipc/vnm_ipc.cpp
+ 
+ INCLUDES += -I$(SRCDIR)/service/
+ INCLUDES += -I$(SRCDIR)/service/wlan_srv
+@@ -53,9 +54,10 @@ INCLUDES += -I$(SRCDIR)/service/utils/statemachine
+ INCLUDES += -I$(SRCDIR)/service/wpa_supp
+ INCLUDES += -I$(SRCDIR)/service/hostapd
+ INCLUDES += -I$(SRCDIR)/service/drv_ctrl
++INCLUDES += -I$(SRCDIR)/service/vnm_ipc
+ INCLUDES += -I$(SRCDIR)/public
+ 
+-LIBS += -ltelemetry -lwpa_client
++LIBS += -ltelemetry -lwpa_client -lvnmipc
+ 
+ # add feature specific stuff
+ ifdef CONFIG_WLANIPC_FEATURE
+diff --git a/service/main.hpp b/service/main.hpp
+index 91e7dc7..5e7d438 100644
+--- a/service/main.hpp
++++ b/service/main.hpp
+@@ -27,6 +27,7 @@
+ #include "drv_ctrl.hpp"
+ #include "wlan_data_types.hpp"
+ #include "os_abstraction.hpp"
++#include "vnm_ipc.hpp"
+ 
+ #ifdef CONFIG_WSTAS_FEATURE
+ #include "wstas.hpp"
+diff --git a/service/makefile.linux b/service/makefile.linux
+index 79915d8..a8e5fc2 100644
+--- a/service/makefile.linux
++++ b/service/makefile.linux
+@@ -1 +1 @@
+-LIBS += -lpthread
++LIBS += -lpthread -lrt
+diff --git a/service/makefile.qnx b/service/makefile.qnx
+index 71f2a1c..d796712 100644
+--- a/service/makefile.qnx
++++ b/service/makefile.qnx
+@@ -1 +1 @@
+-LIBS += -lsocket
++LIBS += -lsocket -lmq
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 0d71f11..991377e 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -14,6 +14,10 @@
+  */
+ 
+ /* INCLUDES *******************************************************************/
++#include "wlan_srv-logger.hpp"
++#include "vnm/vnmipcif.hpp"
++
++#include "main.hpp"
+ /******************************************************************************/
+ 
+ /* NAMESPACE ******************************************************************/
+@@ -33,7 +37,7 @@ static const char* TAG = "vnm_ipc";
+ 
+ /* FUNCTIONS/CLASSES **********************************************************/
+ VnmIpc::VnmIpc(void *ctx):
+-    m_globalCtx(ctx);
++    m_globalCtx(ctx)
+ {
+     ENTER();
+     EXIT();
+@@ -56,95 +60,136 @@ bool VnmIpc::start()
+     // TODO: start resources so that we can monitor for ip address changes on
+     // intf we care about
+ 
++    m_vnmIpcRetCode = m_vnmIpcInstance.initialize(m_vnmIpcId);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to start vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
++
+     INFO("Successfully started vnm_ipc\n");
+     rc = true;
+ 
++LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::start() */
+ 
+ 
+-bool VnmIpc::stop()
++bool VnmIpc::stop(const char *intf)
+ {
+     bool rc = false;
+ 
+     ENTER();
+ 
+     // TODO: stop any resources we started
++    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode(intf); //this should be from the inft_list
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to set DHCP Idle Mode for vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
+ 
+     INFO("Successfully stopped vnm_ipc\n");
+     rc = true;
+ 
++LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::stop() */
+ 
+ 
+-bool VnmIpc::clearIpv4(const char *intf)()
++bool VnmIpc::clearIpv4(const char *intf)
+ {
+     bool rc = false;
+ 
+     ENTER();
+ 
+     // TODO: request that all ipv4 addressing on the interface are cleared
++    m_vnmIpcRetCode = m_vnmIpcInstance.clearIpAddress(intf);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to clear IPv4 IP Address using vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
+ 
+     INFO("Successfully cleared the ipv4 addr on intf = %s\n", intf);
+     rc = true;
+ 
++LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::clearIpv4() */
+ 
+ 
+-bool VnmIpc::requestStaticIpv4(const char *intf, ipv4Addr_t &addr)()
++bool VnmIpc::requestStaticIpv4(const char *intf, ipv4Addr_t &addr)
+ {
+     bool rc = false;
+ 
+     ENTER();
+ 
+-    // TODO: request static IPv4 address on the interface
++    m_vnmIpcRetCode = m_vnmIpcInstance.setStaticIpAddress(intf, addr.ip);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to set static ipv4 address using vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
+     // TODO: add the interface to our montior list so that we know when addr changes
+ 
+     // TODO add proper printing of the values just set
+-    INFO("Successfully set static ipv4 addr (ip/netmask/gw/dns) on intf = %s\n",
+-            intf);
++    INFO("Successfully set static ipv4 addr (ip = %s/netmask/gw/dns) on intf = %s\n",
++            addr.ip, intf);
+     rc = true;
+ 
++LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::requestStaticIpv4() */
+ 
+ 
+-bool VnmIpc::requestDhcpClient(const char *intf)()
++bool VnmIpc::requestDhcpClient(const char *intf)
+ {
+     bool rc = false;
+ 
+     ENTER();
+ 
+-    // TODO: request that a dhcp client is started
++    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpClientMode(intf);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to enable DHCP Client Mode for vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
+     // TODO: add the interface to our montior list so that we know when addr changes
+ 
+     INFO("Successfully requested DHCP Client on intf = %s\n", intf);
+     rc = true;
+ 
++LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::requestStaticIpv4() */
+ 
+ 
+-bool VnmIpc::requestDhcpServer(const char *intf /* server config */)()
++bool VnmIpc::requestDhcpServer(const char *intf /* server config */)
+ {
+     bool rc = false;
+ 
+     ENTER();
+ 
+     // TODO: request tha a dhcp server, using the config specified be started
++    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpServerMode(intf);
++    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
++        ERROR("Failed to enable DHCP Server Mode for vnm_ipc\n");
++        rc = false;
++        goto LEAVE;
++    }
+     // TODO: add the interface to our montior list so that we know when addr changes
+ 
+     INFO("Successfully requested DHCP Server (ip/netmask/gw/dns/etc) on intf = %s\n",
+             intf);
+     rc = true;
+ 
++LEAVE:
+     EXIT();
+     return(rc);
+ } /* VnmIpc::requestDhcpServer() */
+diff --git a/service/vnm_ipc/vnm_ipc.hpp b/service/vnm_ipc/vnm_ipc.hpp
+index bb90033..1273c3c 100644
+--- a/service/vnm_ipc/vnm_ipc.hpp
++++ b/service/vnm_ipc/vnm_ipc.hpp
+@@ -17,7 +17,8 @@
+ #define WLAN_SRV_VNM_IPC_HPP
+ 
+ /* INCLUDES *******************************************************************/
+-#include "wlan_data_types.hpp";
++#include "wlan_data_types.hpp"
++#include "vnm/vnmipcif.hpp"
+ /******************************************************************************/
+ 
+ /* NAMESPACE ******************************************************************/
+@@ -38,7 +39,7 @@ class VnmIpc
+         virtual ~VnmIpc();
+ 
+         bool start();
+-        bool stop();
++        bool stop(const char *intf);
+ 
+         /* IPv4 stuff */
+         bool clearIpv4(const char *intf);
+@@ -53,6 +54,11 @@ class VnmIpc
+         VnmIpc & operator=(const VnmIpc &) = delete;
+ 
+         void *m_globalCtx;
++
++        std::string m_vnmIpcId = "wlanSrv";
++
++        fnv::vnm::VnmIpc m_vnmIpcInstance;
++        fnv::vnm::VnmIpcRet_t m_vnmIpcRetCode;
+ };
+ /******************************************************************************/
+ } /* wlan */
+diff --git a/test/Makefile b/test/Makefile
+index 1a23f0d..f0b34e2 100644
+--- a/test/Makefile
++++ b/test/Makefile
+@@ -48,6 +48,7 @@ SRCS += $(SRCDIR)/service/wpa_supp/wpa_supp.cpp
+ SRCS += $(SRCDIR)/service/hostapd/hostapd.cpp
+ SRCS += $(SRCDIR)/service/hostapd/hostapd_cmds.cpp
+ SRCS += $(SRCDIR)/service/drv_ctrl/drv_ctrl.cpp
++SRCS += $(SRCDIR)/service/vnm_ipc/vnm_ipc.cpp
+ 
+ INCLUDES += -I$(SRCDIR)/service/
+ INCLUDES += -I$(SRCDIR)/service/wlan_srv
+@@ -58,12 +59,13 @@ INCLUDES += -I$(SRCDIR)/service/utils/statemachine
+ INCLUDES += -I$(SRCDIR)/service/wpa_supp
+ INCLUDES += -I$(SRCDIR)/service/hostapd
+ INCLUDES += -I$(SRCDIR)/service/drv_ctrl
++INCLUDES += -I$(SRCDIR)/service/vnm_ipc
+ INCLUDES += -I$(SRCDIR)/public
+ 
+ ifeq ($(FORD_ECU),tcu)
+-LIBS += -ltelemetry
++LIBS += -ltelemetry -lvnmipc
+ else ifeq ($(FORD_ECU),sync)
+-LIBS += -ltelemetry
++LIBS += -ltelemetry -lvnmipc
+ endif
+ 
+ # add feature specific stuff
+diff --git a/test/makefile.linux b/test/makefile.linux
+index 79915d8..a8e5fc2 100644
+--- a/test/makefile.linux
++++ b/test/makefile.linux
+@@ -1 +1 @@
+-LIBS += -lpthread
++LIBS += -lpthread -lrt
+diff --git a/test/makefile.qnx b/test/makefile.qnx
+index 71f2a1c..d796712 100644
+--- a/test/makefile.qnx
++++ b/test/makefile.qnx
+@@ -1 +1 @@
+-LIBS += -lsocket
++LIBS += -lsocket -lmq

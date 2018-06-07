@@ -1,0 +1,56 @@
+commit c7c7c8f26c524d79e9b2f9f859e868ad8435e9c2
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Sun Apr 8 17:12:27 2018 -0400
+
+    Updated handle func to return int
+
+diff --git a/service/wlan_srv/wlan_srv.cpp b/service/wlan_srv/wlan_srv.cpp
+index 1c6fba5..1cd19e0 100644
+--- a/service/wlan_srv/wlan_srv.cpp
++++ b/service/wlan_srv/wlan_srv.cpp
+@@ -519,7 +519,7 @@ int WlanSrv::processWlanActionApi(WlanAction *action)
+             break;
+ #endif /* CONFIG_EMC_FEATURE */
+         case (WlanActionType::WlanSrvTypeIpAddrUpdate):
+-            handleIpAddrUpdate(action);
++            rc = handleIpAddrUpdate(action);
+             break;
+         default:
+             action->startOfProcessing();
+@@ -1070,12 +1070,13 @@ int WlanSrv::HandleErrorToOff()
+ 
+ 
+ // TODO: add doxygen
+-void WlanSrv::handleIpAddrUpdate(WlanAction *action)
++int WlanSrv::handleIpAddrUpdate(WlanAction *action)
+ {
+     WlanContext_t *ctx = NULL;
+     WlanAction *new_action[3] = {NULL};
+     WlanIpAddrUpdate_t *ipAddrUpdate = NULL;
+     int i = 0;
++    int rc = 0;
+ 
+     ENTER();
+ 
+@@ -1104,7 +1105,7 @@ void WlanSrv::handleIpAddrUpdate(WlanAction *action)
+     action->endOfProcessing();
+ 
+     EXIT();
+-    return;
++    return(rc);
+ } /* WlanSrv::handleIpAddrUpdate(WlanAction *action) */
+ 
+ 
+diff --git a/service/wlan_srv/wlan_srv.hpp b/service/wlan_srv/wlan_srv.hpp
+index 3525bcb..aa964c3 100644
+--- a/service/wlan_srv/wlan_srv.hpp
++++ b/service/wlan_srv/wlan_srv.hpp
+@@ -79,7 +79,7 @@ class WlanSrv : public util::StateMachine<WlanSrvState, WlanActionType>
+ 
+         int processWlanAction(WlanAction *action);
+ 
+-        void handleIpAddrUpdate(WlanAction *action);
++        int handleIpAddrUpdate(WlanAction *action);
+ 
+         int priorityQueueAction(WlanAction *action);
+ 

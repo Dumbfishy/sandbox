@@ -1,0 +1,18 @@
+--- service/wstas/wstas.cpp
++++ service/wstas/wstas.cpp
+@@ -1322,13 +1322,13 @@ int Wstas::handleEventAuthenticated(WlanAction* action)
+      * Eventually this action will be received on another
+      * IPC mechanism originating from VNM - for now create
+      * and queue it internally.
+-     */
++     *
+     new_action = new WlanAction {
+             WlanActionType::WstasTypeIpAddrCmplt,
+             WlanActionSource::SrcInternal,
+     };
+     queueAction(new_action);
+-
++    */
+     /* Clean-up */
+     if (profile) {
+         delete(profile);

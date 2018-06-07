@@ -1,0 +1,1600 @@
+/*
+ * CONFIDENTIAL - FORD MOTOR COMPANY
+ *
+ * This is an unpublished work, which is a trade secret, created in
+ * 2017.  Ford Motor Company owns all rights to this work and intends
+ * to maintain it in confidence to preserve its trade secret status.
+ * Ford Motor Company reserves the right to protect this work as an
+ * unpublished copyrighted work in the event of an inadvertent or
+ * deliberate unauthorized publication.  Ford Motor Company also
+ * reserves its rights under the copyright laws to protect this work
+ * as a published work.  Those having access to this work may not copy
+ * it, use it, or disclose the information contained in it without
+ * the written authorization of Ford Motor Company.
+ */
+
+/* INCLUDES *******************************************************************/
+#include <chrono>
+
+#include "wlan_srv-logger.hpp"
+#include "main.hpp"
+/******************************************************************************/
+
+/* NAMESPACE ******************************************************************/
+namespace wlan {
+/******************************************************************************/
+
+/* DEFINES ********************************************************************/
+static const char* TAG = "wstas";
+/* ****************************************************************************/
+
+/* GLOBALS ********************************************************************/
+/******************************************************************************/
+
+/* PROTOTYPES *****************************************************************/
+/******************************************************************************/
+
+/* FUNCTIONS/CLASSES **********************************************************/
+
+// TODO: add doxygen
+Wstas::Wstas(void *ctx) :
+    util::StateMachine<StaSmState, WlanActionType>
+            (StaSmState::Off, table_type(
+    { /* })) */
+    {
+        StaSmState::Off, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeStart, /* event */
+                {
+                    StaSmState::Enabling, /* next state */
+                    std::bind(&Wstas::handleOffToEnabling, this) /* callback */
+                }
+            },
+        }
+    },
+    {
+        StaSmState::Enabling, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeStartDone, /* event */
+                {
+                    StaSmState::On, /* next state */
+                    std::bind(&Wstas::handleEnablingToOn, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeError, /* event */
+                {
+                    StaSmState::Error, /* next state */
+                    std::bind(&Wstas::handleEnablingToError, this) /* callback */
+                }
+            },
+        }
+    },
+    {
+        StaSmState::On, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeConnecting, /* event */
+                {
+                    StaSmState::Connecting, /* next state */
+                    std::bind(&Wstas::handleOnToConnecting, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeStop, /* event */
+                {
+                    StaSmState::Disabling, /* next state */
+                    std::bind(&Wstas::handleOnToDisabling, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeError, /* event */
+                {
+                    StaSmState::Error, /* next state */
+                    std::bind(&Wstas::handleOnToError, this) /* callback */
+                }
+            },
+        }
+    },
+    {
+        StaSmState::Connecting, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeDisconnecting, /* event */
+                {
+                    StaSmState::Disconnecting, /* next state */
+                    std::bind(&Wstas::handleConnectingToDisconnecting, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeIpAddrCmplt, /* event */
+                {
+                    StaSmState::Connected, /* next state */
+                    std::bind(&Wstas::handleConnectingToConnected, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeAssocError, /* event */
+                {
+                    StaSmState::Disconnecting, /* next state */
+                    std::bind(&Wstas::handleConnectingToAssocDisconnecting, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeAuthError, /* event */
+                {
+                    StaSmState::Disconnecting, /* next state */
+                    std::bind(&Wstas::handleConnectingToAuthDisconnecting, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeIpAddrError, /* event */
+                {
+                    StaSmState::Disconnecting, /* next state */
+                    std::bind(&Wstas::handleConnectingToIpAddrDisconnecting, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeError, /* event */
+                {
+                    StaSmState::Error, /* next state */
+                    std::bind(&Wstas::handleConnectingToError, this) /* callback */
+                }
+            },
+        }
+    },
+    {
+        StaSmState::Connected, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeDisconnecting, /* event */
+                {
+                    StaSmState::Disconnecting, /* next state */
+                    std::bind(&Wstas::handleConnectedToDisconnecting, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeError, /* event */
+                {
+                    StaSmState::Error, /* next state */
+                    std::bind(&Wstas::handleConnectedToError, this) /* callback */
+                }
+            },
+        }
+    },
+    {
+        StaSmState::Disconnecting, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeDisconnected, /* event */
+                {
+                    StaSmState::On, /* next state */
+                    std::bind(&Wstas::handleDisconnectingToOn, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeError, /* event */
+                {
+                    StaSmState::Error, /* next state */
+                    std::bind(&Wstas::handleDisconnectingToError, this) /* callback */
+                }
+            },
+        }
+    },
+    {
+        StaSmState::Disabling, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeStopDone, /* event */
+                {
+                    StaSmState::Off, /* next state */
+                    std::bind(&Wstas::handleDisablingToOff, this) /* callback */
+                }
+            },
+            {
+                WlanActionType::WstasTypeError, /* event */
+                {
+                    StaSmState::Error, /* next state */
+                    std::bind(&Wstas::handleDisablingToError, this) /* callback */
+                }
+            },
+        }
+    },
+    {
+        StaSmState::Error, /* current state */
+        {
+            {
+                WlanActionType::WstasTypeErrorDone, /* event */
+                {
+                    StaSmState::Off, /* next state */
+                    std::bind(&Wstas::handleErrorToOff, this) /* callback */
+                }
+            },
+        }
+    },
+    }))
+{
+    ENTER();
+    m_globalCtx = ctx;
+    EXIT();
+}
+
+
+// TODO: add doxygen
+Wstas::~Wstas()
+{
+    ENTER();
+
+    EXIT();
+}
+
+
+// TODO: add doxygen
+void Wstas::mainLoop()
+{
+    WlanContext_t *ctx = NULL;
+    WlanAction *action = NULL;
+    std::unique_lock<std::mutex> lockApiq(m_qMutexApi, std::defer_lock);
+    std::unique_lock<std::mutex> lockEventq(m_qMutexEvent, std::defer_lock);
+    std::unique_lock<std::mutex> lockcv(m_cvMutex, std::defer_lock);
+    std::chrono::seconds sec(1);
+
+    ENTER();
+
+    if (m_globalCtx == NULL) {
+        ERROR("m_globalCtx is NULL\n");
+        goto LEAVE;
+    }
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* initalize our status structure */
+    memset(m_status.macAddr, 0x0, sizeof(m_status.macAddr));
+    m_status.smState = StateMachine::state();
+    m_status.conState = StaConState::Disconnected;
+    memset(m_status.ssid, 0x0, sizeof(m_status.ssid));
+    m_status.security = Security::Min;
+    m_status.pairwise = PairwiseCipher::Min;
+    m_status.group = GroupCipher::Min;
+    m_status.channel = Channel::Min;
+    m_status.bw = Bandwidth::Min;
+    m_status.tech = Technology::Min;
+    m_status.dataRate = DataRate::Min;
+    m_status.rssi = 0;
+    m_status.noise = 0;
+    m_status.snr = 0;
+    memset(m_status.ipv4Addr.ip, 0x0, sizeof(m_status.ipv4Addr.ip));
+    memset(m_status.ipv4Addr.netmask, 0x0, sizeof(m_status.ipv4Addr.netmask));
+    memset(m_status.ipv4Addr.gateway, 0x0, sizeof(m_status.ipv4Addr.gateway));
+    memset(m_status.ipv4Addr.dnsPref, 0x0, sizeof(m_status.ipv4Addr.dnsPref));
+    memset(m_status.ipv4Addr.dnsAlt, 0x0, sizeof(m_status.ipv4Addr.dnsAlt));
+    //memset(m_status.ipv6Addr, 0x0, sizeof(m_status.ipv6Addr)); NOT SUPPORTED YET
+
+    INFO("main loop is starting\n");
+    WAIT_FOR_RUNNING();
+    INFO("main loop is running\n");
+
+    while (1)
+    {
+        // wait for condvar
+        lockcv.lock();
+        while ((m_queueApi.empty()) &&
+               (m_queueEvent.empty()) &&
+               (ctx->running)) {
+
+            TRACE("queues are empty\n");
+            /*
+             * to be able to stop this thread we can't stay stuck here
+             * indefinitely
+             */
+            m_cvQueue.wait_for(lockcv, sec);
+            TRACE("cv wake up\n");
+        }
+        lockcv.unlock();
+
+        /* check if we should be running or not */
+        if (!ctx->running) {
+            DEBUG("ctx->running is false, exiting ...\n");
+            goto LEAVE;
+        }
+
+        /*
+         * process all items in the event queue while we are running
+         */
+        while ((!m_queueEvent.empty()) &&
+               (ctx->running)) {
+            /* lock our mutex for the queue */
+            lockEventq.lock();
+
+            /* dequeue wlan_action */
+            action = m_queueEvent.front();
+            m_queueEvent.pop_front();
+
+            /* unlock our mutex */
+            lockEventq.unlock();
+
+            /* send for processing */
+            processWlanActionEvent(action);
+        } /* while (!m_queueEvent.empty()) */
+
+        /*
+         * process only 1 item from the api queue and we are running still
+         */
+        if ((!m_queueApi.empty()) &&
+            (ctx->running)) {
+            /* lock our mutex for the queue */
+            lockApiq.lock();
+
+            /* dequeue wlan_action */
+            action = m_queueApi.front();
+            m_queueApi.pop_front();
+
+            /* unlock our mutex */
+            lockApiq.unlock();
+
+            /* send for processing */
+            processWlanActionApi(action);
+        } /* if (!m_queueApi.emtpy()) */
+
+    } /* while (1) */
+
+LEAVE:
+    INFO("main loop ending\n");
+    EXIT();
+    return;
+}
+
+
+// TODO: add doxygen
+int Wstas::priorityQueueAction(WlanAction *action)
+{
+    int rc = 0;
+    ENTER();
+
+    switch (action->getSubType()) {
+    case (WlanActionSubType::SubTypeApi):
+        /*
+         * add the action frame to the front of the API queue
+         */
+        rc = queueApiAction(action, true);
+        break;
+    case (WlanActionSubType::SubTypeEvent):
+        /*
+         * add the action frame to the back of the event queue
+         */
+        rc = queueEventAction(action, false);
+        break;
+    default:
+        break;
+    } /* switch (action->getSubType()) */
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add doxygen
+int Wstas::queueAction(WlanAction *action)
+{
+    int rc = 0;
+    ENTER();
+
+    switch (action->getSubType()) {
+    case (WlanActionSubType::SubTypeApi):
+        /*
+         * add the action frame to the back of the API queue
+         */
+        rc = queueApiAction(action, false);
+        break;
+    case (WlanActionSubType::SubTypeEvent):
+        /*
+         * add the action frame to the back of the event queue
+         */
+        rc = queueEventAction(action, false);
+        break;
+    default:
+        break;
+    } /* switch (action->getSubType()) */
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add doxygen
+int Wstas::queueApiAction(WlanAction *action, bool priority)
+{
+    int rc = 0;
+
+    ENTER();
+
+    { /* m_qMutexApi */
+        /* lock the mutuex for the queue */
+        std::unique_lock<std::mutex> lock(m_qMutexApi);
+
+        std::string id;
+        action->getId(id);
+        INFO("Successfully added wlanAction id = %s - %s to %s of WSTAS "
+             "API queue\n",
+                id.c_str(),
+                action->getTypeStr(),
+                (priority ? "front" : "back"));
+
+        /* add the action to the queue */
+        if (priority) {
+            m_queueApi.push_front(action);
+        } else {
+            m_queueApi.push_back(action);
+        }
+    } /* m_qMutexApi */
+
+    { /* m_cvMutex */
+        /* lock the mutex for cv */
+        std::unique_lock<std::mutex> lock(m_cvMutex);
+
+        /* signal via the condvar */
+        m_cvQueue.notify_all();
+    } /* m_cvMutex */
+
+    rc = 0;
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add doxygen
+int Wstas::queueEventAction(WlanAction *action, bool priority)
+{
+    int rc = 0;
+
+    ENTER();
+
+    { /* m_qMutexEvent */
+        /* lock the mutuex for the queue */
+        std::unique_lock<std::mutex> lock(m_qMutexEvent);
+
+        std::string id;
+        action->getId(id);
+        INFO("Successfully added wlanAction id = %s - %s to %s of WSTAS "
+             "Event queue\n",
+                id.c_str(),
+                action->getTypeStr(),
+                (priority ? "front" : "back"));
+
+        /* add the action to the queue */
+        if (priority) {
+            m_queueEvent.push_front(action);
+        } else {
+            m_queueEvent.push_back(action);
+        }
+    } /* m_qMutexEvent */
+
+    { /* m_cvMutex */
+        /* lock the mutex for cv */
+        std::unique_lock<std::mutex> lock(m_cvMutex);
+
+        /* signal via the condvar */
+        m_cvQueue.notify_all();
+    } /* m_cvMutex */
+
+    rc = 0;
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add Doxygen
+int Wstas::processWlanActionApi(WlanAction *action)
+{
+    int rc = 0;
+    ENTER();
+
+    std::string id;
+    action->getId(id);
+    INFO("Processing wlanAction id = %s - %s from WSTAS API queue\n",
+            id.c_str(), action->getTypeStr());
+
+    switch (action->getType()){
+    case (WlanActionType::WstasTypeEnable):
+        rc = handleApiEnable(action);
+        break;
+    case (WlanActionType::WstasTypeScan):
+        rc = handleApiScan(action);
+        break;
+    case (WlanActionType::WstasTypeConnect):
+        rc = handleApiConnect(action);
+        break;
+    case (WlanActionType::WstasTypeDisconnect):
+        rc = handleApiDisconnect(action);
+        break;
+    case (WlanActionType::WstasTypeDisable):
+        rc = handleApiDisable(action);
+        break;
+    default:
+        ERROR("Received unknown action type %d\n", static_cast<int>(action->getType()));
+        // TODO: find a better way to clean up from this error (multiple spots for delete)
+        delete(action);
+        rc = -1;
+        break;
+    } /* switch (aciton->getType()) */
+
+    INFO("Done processing wlanAction id = %s - %s from WSTAS API queue\n",
+            id.c_str(), action->getTypeStr());
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add Doxygen
+int Wstas::processWlanActionEvent(WlanAction *action)
+{
+    int rc = 0;
+    ENTER();
+
+    std::string id;
+    action->getId(id);
+    INFO("Processing wlanAction id = %s - %s from WSTAS Event queue\n",
+            id.c_str(), action->getTypeStr());
+
+    DEBUG("Current state = %s\n", currentState());
+
+    /* Events can be handled by state machine or their own handlers */
+    switch (action->getType()){
+    case (WlanActionType::WstasTypeAuthenticated):
+        handleEventAuthenticated(action);
+        break;
+    case (WlanActionType::WstasTypeScanResults):
+        handleEventScanResults(action);
+        break;
+    case (WlanActionType::WstasTypeDisconnected):
+        if (StateMachine::state() != StaSmState::Disconnecting) {
+            INFO("Received Event Disconnected, need to move to State Disconnecting before processing\n");
+
+            /* create a new WstasTypeDisconnecting action */
+            WlanAction *new_action = new WlanAction {WlanActionType::WstasTypeDisconnecting,
+                                                 WlanActionSource::SrcInternal};
+
+            /*
+             * Queue the Disconnecting Action first, then re-queue the Disconnected Action
+             * as priority queued Events are processed in the order they arrive.
+             */
+            priorityQueueAction(new_action);
+            priorityQueueAction(action);
+            break;
+        }
+        /*
+         * Else we are in the correct state to fall through and
+         * do the default case handling for the Event
+         *
+         * NOTE: this case needs to remain before the default case
+         *       with no break or the functionality will be broken
+         */
+    default:
+        action->startOfProcessing();
+        if (StateMachine::handleEvent(action->getType())) {
+            INFO("Successfully handled id = %lu (%s)\n",
+                  action->getId(), action->getTypeStr());
+        } else {
+            ERROR("Failed to handle id = %lu (%s)\n",
+                    action->getId(), action->getTypeStr());
+            // TODO: properly handle this error ... event in wrong state only
+        }
+        action->endOfProcessing();
+        break;
+    } /* switch (aciton->getType()) */
+
+    INFO("Done processing wlanAction id = %s - %s from WSTAS Event queue\n",
+            id.c_str(), action->getTypeStr());
+
+    EXIT();
+    return(rc);
+}
+
+/* API Functions **************************************************************/
+// TODO: add Doxygen
+int Wstas::handleApiEnable(WlanAction *action)
+{
+    int rc = 0;
+    WlanAction *new_action;
+    ENTER();
+
+    action->startOfProcessing();
+    INFO("handling api enable\n");
+
+    /*
+     * create a new wlan_action and inject a start event
+     */
+    new_action = new WlanAction {WlanActionType::WstasTypeStart,
+                                 WlanActionSource::SrcInternal};
+
+    queueAction(new_action);
+    action->endOfProcessing();
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add Doxygen
+int Wstas::handleApiScan(WlanAction *action)
+{
+    WlanAction *new_action = NULL;
+    WlanContext_t *ctx = NULL;
+    ScanConfig_t cfg;
+    scanId_t id = {0};
+    int rc = 0;
+    ENTER();
+
+    /* Wstas needs to be ON for this; makesure we are in on */
+    switch (StateMachine::state()) {
+    case (StaSmState::Error): // not handle in this state in the future
+    case (StaSmState::Off):
+        WARN("Received Scan request in Off/Error state, startin WSTAS\n");
+
+        new_action = new WlanAction {
+                WlanActionType::WstasTypeEnable,
+                WlanActionSource::SrcInternal,
+        };
+
+        priorityQueueAction(action);
+        priorityQueueAction(new_action);
+
+        rc = 0;
+        break;
+    default:
+        action->startOfProcessing();
+
+        INFO("handling api scan\n");
+
+        ctx = (WlanContext_t *)m_globalCtx;
+
+        action->unpack(&cfg);
+
+        id  = (ctx->wpa_supp)->requestScan(cfg);
+
+        action->setScanId(id);
+
+        //TODO: handle if scan fails...insert wlan.action(ERROR)
+        action->endOfProcessing();
+        break;
+    }
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add Doxygen
+int Wstas::handleApiConnect(WlanAction *action)
+{
+    WlanAction* new_action = NULL;
+    WlanContext_t *ctx = NULL;
+    WlanProfile_t profile;
+    bool rc = 0;
+    ENTER();
+
+    ctx = static_cast<WlanContext_t *>(m_globalCtx);
+
+    switch (StateMachine::state()) {
+    case (StaSmState::Off):
+        INFO("Received connection request while off, enabling first\n");
+
+        /*
+         * Before we can handle this connection request, we need to
+         * enable Wstas first
+         */
+        new_action = new WlanAction {WlanActionType::WstasTypeEnable,
+                                     WlanActionSource::SrcInternal};
+
+        /*
+         * Priority enqueue enable request first so we'll process it
+         * before the connection request
+         */
+        priorityQueueAction(action);
+        priorityQueueAction(new_action);
+        break;
+    case (StaSmState::On):
+        INFO("Received connection request while on, transitioning to connecting state\n");
+
+        /*
+         * We're in a clean state to handle this request, but we
+         * need to transition into the connecting state first
+         */
+        new_action = new WlanAction {WlanActionType::WstasTypeConnecting,
+                                     WlanActionSource::SrcInternal};
+
+        /*
+         * Re-enqueue connection request so we can handle it
+         * when in the connecting state
+         */
+        priorityQueueAction(action);
+        priorityQueueAction(new_action);
+        break;
+    case (StaSmState::Connected):
+        WARN("Received connection request while connected, disconnect first\n");
+
+        new_action = new WlanAction {WlanActionType::WstasTypeDisconnect,
+                                     WlanActionSource::SrcInternal};
+
+        /*
+         * Re-enqueue connection request first so we can handle it
+         * after we've disconnected
+         */
+        priorityQueueAction(action);
+        priorityQueueAction(new_action);
+        break;
+    case (StaSmState::Connecting):
+        action->startOfProcessing();
+        INFO("Handling API connect\n");
+
+        action->unpack(&profile);
+        rc = (ctx->wpa_supp)->addProfile(profile);
+        rc = (ctx->wpa_supp)->enableProfile();
+        //TODO: handle if errors occur...insert wlan.action(ERROR)
+
+        action->setReturnCode(rc);
+        action->endOfProcessing();
+        break;
+    case (StaSmState::Enabling):
+    case (StaSmState::Disconnecting):
+    case (StaSmState::Disabling):
+        WARN("Received connection request while transitioning states, "
+                "re-enqueue until we're ready\n");
+
+        /*
+         * Priority re-enqueue connection request first
+         * so we can handle it after we've disconnected
+         */
+        priorityQueueAction(action);
+        break;
+    default:
+        action->startOfProcessing();
+
+        WARN("Dropping wlan_action id = %lu, received connection request in an "
+                "invalid state = %s\n", action->getId(), currentState());
+
+        action->setReturnCode(false);
+        action->endOfProcessing();
+        break;
+    }
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add Doxygen
+int Wstas::handleApiDisconnect(WlanAction *action)
+{
+    WlanAction *new_action = NULL;
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+    ENTER();
+
+    ctx = static_cast<WlanContext_t *>(m_globalCtx);
+
+    switch(StateMachine::state()) {
+    case (StaSmState::Off):
+    case (StaSmState::On):
+        action->startOfProcessing();
+
+        INFO("Received disconnection request while on or off, nothing to do\n");
+
+        action->setReturnCode(0);
+        action->endOfProcessing();
+        break;
+    case (StaSmState::Connected):
+        INFO("Received disconnection request while connected or connecting, "
+                "transitioning to disconnecting state\n");
+
+        new_action = new WlanAction {WlanActionType::WstasTypeDisconnecting,
+                                     WlanActionSource::SrcInternal};
+
+        priorityQueueAction(action);
+        priorityQueueAction(new_action);
+        break;
+    case (StaSmState::Disconnecting):
+        action->startOfProcessing();
+        INFO("Handling API disconnect\n");
+
+        /*
+         * Use the wpa_supp to remove the current
+         * network causing us to disconnect
+         */
+        INFO("Removing active wpa_supp profile\n");
+        rc = (ctx->wpa_supp)->removeProfile();
+
+        action->setReturnCode(rc);
+        action->endOfProcessing();
+        break;
+    case (StaSmState::Enabling):
+    case (StaSmState::Connecting):
+    case (StaSmState::Disabling):
+        WARN("Received disconnection request while transitioning states, "
+                "re-enqueue until we're ready\n");
+
+        /*
+         * Priority re-enqueue disconnection request first
+         * so we can handle it after we've disconnected
+         */
+        priorityQueueAction(action);
+        break;
+    default:
+        action->startOfProcessing();
+
+        WARN("Dropping wlan_action id = %lu, received disconnection request in an "
+             "invalid state = %s\n", action->getId(), currentState());
+
+        action->setReturnCode(-1);
+        action->endOfProcessing();
+        break;
+    }
+
+    EXIT();
+    return(rc);
+}
+
+
+// TODO: add Doxygen
+int Wstas::handleApiDisable(WlanAction *action)
+{
+    WlanAction *new_action;
+    int rc = 0;
+    ENTER();
+
+    switch(StateMachine::state()) {
+    case (StaSmState::Off):
+        action->startOfProcessing();
+
+        INFO("Received disable request while off, nothing to do\n");
+
+        action->setReturnCode(0);
+        action->endOfProcessing();
+        break;
+    case (StaSmState::On):
+        action->startOfProcessing();
+        INFO("Handling api disable\n");
+
+        /*
+         * create a new wlan_action and inject a stop event
+         */
+        new_action = new WlanAction {WlanActionType::WstasTypeStop,
+                                     WlanActionSource::SrcInternal};
+
+        priorityQueueAction(new_action);
+        action->setReturnCode(0);
+        action->endOfProcessing();
+        break;
+    case (StaSmState::Connected):
+        INFO("Received disable request while connected, transitioning to on state\n");
+
+        new_action = new WlanAction {WlanActionType::WstasTypeDisconnect,
+                                     WlanActionSource::SrcInternal};
+
+        /*
+         * Priority re-enqueue disconnect request last so we can
+         * process the disconnection first before the disable
+         */
+        priorityQueueAction(action);
+        priorityQueueAction(new_action);
+        break;
+    case (StaSmState::Enabling):
+    case (StaSmState::Connecting):
+    case (StaSmState::Disconnecting):
+    case (StaSmState::Disabling):
+        WARN("Received disable request while transitioning states, "
+                "re-enqueue until we're ready\n");
+
+        /*
+         * Priority re-enqueue disable request first
+         * so we can handle it after we've disconnected
+         */
+        priorityQueueAction(action);
+        break;
+    default:
+        action->startOfProcessing();
+
+        WARN("Dropping wlan_action id = %lu, received disable request in an "
+             "invalid state = %s\n", action->getId(), currentState());
+
+        action->setReturnCode(-1);
+        action->endOfProcessing();
+        break;
+    }
+
+    EXIT();
+    return(rc);
+} /*  Wstas::handleApiDisable() */
+/* API Functions **************************************************************/
+
+/* State Change Event Functions ***********************************************/
+// TODO: add Doxygen
+int Wstas::handleOffToEnabling()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Off to Enabling\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* request wpa_supplicant acces */
+    rc = (ctx->wpa_supp)->request();
+    //TODO: handle if failure to request wpa_supplicant...insert wlan.action(ERROR)
+
+    /* update StaStatus */
+    (ctx->drv_ctrl)->getMacAddr(m_status.macAddr);
+    m_status.smState = StaSmState::Enabling;
+    m_status.conState = StaConState::Disconnected;
+
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleOffToEnabling() */
+
+
+// TODO: add Doxygen
+int Wstas::handleEnablingToOn()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Enabling to On\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::On;
+    m_status.conState = StaConState::Disconnected;
+
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleEnablingToOn() */
+
+
+// TODO: add Doxygen
+int Wstas::handleEnablingToError()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Enabling to Error\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Error;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleEnablingToError() */
+
+
+// TODO: add Doxygen
+int Wstas::handleOnToConnecting()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from On to Connecting\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Connecting;
+    m_status.conState = StaConState::Associating;
+
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleOnToConnecting() */
+
+
+// TODO: add Doxygen
+int Wstas::handleOnToDisabling()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from On to Disabling\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* decline access to the supplicant */
+    rc = (ctx->wpa_supp)->decline();
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Disabling;
+
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleOnToDisabling() */
+
+
+// TODO: add Doxygen
+int Wstas::handleOnToError()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from On to Error\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Error;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleOnToError() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectingToConnected()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connecting to Connected\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Connected;
+    m_status.conState = StaConState::Connected;
+
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleConnectingToConnected() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectingToAssocDisconnecting()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connecting to Disconnecting (due to Assoc error\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Disconnecting;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleConnectingToAssocDisconnecting() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectingToAuthDisconnecting()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connecting to Disconnecting (due to Network Auth error)\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Disconnecting;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleConnectingToAuthDisconnecting() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectingToIpAddrDisconnecting()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connecting to Disconnecting (due to IP Addr error)\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Disconnecting;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleConnectingToIpAddrDisconnecting() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectingToError()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connecting to Error\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Error;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleConnectingToError() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectingToDisconnecting()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connecting to Disconnecting\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Disconnecting;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleConnectingToDisconnecting() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectedToDisconnecting()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connected to Disconnecting\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Disconnecting;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleConnectedToDisconnecting() */
+
+
+// TODO: add Doxygen
+int Wstas::handleConnectedToError()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Connected to Error\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Error;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /*Wstas::handleConnectedToError() */
+
+
+// TODO: add Doxygen
+int Wstas::handleDisconnectingToOn()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Disconnecting to On\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::On;
+    m_status.conState = StaConState::Disconnected;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleDisconnectingToOn() */
+
+
+// TODO: add Doxygen
+int Wstas::handleDisconnectingToError()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Disconnecting to Error\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Error;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleDisconnectingToError() */
+
+
+// TODO: add Doxygen
+int Wstas::handleDisablingToOff()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Disabling to Off\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Off;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleDisablingToOff() */
+
+
+// TODO: add Doxygen
+int Wstas::handleDisablingToError()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Disabling to Error\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Error;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleDisablingToError() */
+
+
+// TODO: add Doxygen
+int Wstas::handleErrorToOff()
+{
+    WlanContext_t *ctx = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    INFO("Transitioning from Error to Off\n");
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    /* update StaStatus */
+    m_status.smState = StaSmState::Off;
+    m_status.conState = StaConState::Disconnected;
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+    EXIT();
+    return(rc);
+} /* Wstas::handleErrorToOff() */
+/* State Change Event Functions ***********************************************/
+
+/* Non State Change Event Functions *******************************************/
+// TODO: add Doxygen
+int Wstas::handleEventAuthenticated(WlanAction* action)
+{
+    WlanContext_t *ctx = NULL;
+    WlanProfile_t* profile = NULL;
+    WlanAction* new_action = NULL;
+    int rc = 0;
+
+    ENTER();
+
+    ctx = (WlanContext_t *)m_globalCtx;
+
+    INFO("Handling Authenticated evennt\n");
+
+    action->startOfProcessing();
+
+    /* update StaStatus */
+    m_status.conState = StaConState::IpAddressing;
+    (ctx->wpa_supp)->getConnectionInfo(&m_status);
+
+    (ctx->wlan_ipc)->sendMsg(m_status);
+
+
+    profile = new WlanProfile_t();
+    action->unpack(profile);
+
+    switch(profile->ipv4AddrType) {
+    case (Ipv4AddrType::None):
+        WARN("Connection profile indicated NO IPv4 addressing\n");
+        break;
+    case(Ipv4AddrType::Static):
+        INFO("Connection profile indicated STATIC IPv4 addressing\n");
+        rc = setIpv4AddressStatic(profile->ipv4.staticIpv4);
+        break;
+    case(Ipv4AddrType::DhcpClient):
+        INFO("Connection profile indicated DYNAMIC IPv4 addressing\n");
+        rc = setIpv4AddressDynamic();
+        break;
+    default:
+        ERROR("Invalid or unknown IPv4 settings type specified = %d\n",
+                static_cast<int>(profile->ipv4AddrType));
+        rc = -1;
+        break;
+    }
+
+    switch(profile->ipv6AddrType) {
+    case (Ipv6AddrType::None):
+        WARN("Connection profile indicated NO IPv6 addressing\n");
+        break;
+    case(Ipv6AddrType::Static):
+        INFO("Connection profile indicated STATIC IPv6 addressing\n");
+        // TODO: add support for IPv6 addressing
+        WARN("IPv6 addressing is not supported yet!\n");
+        break;
+    default:
+        ERROR("Invalid or unknown IPv6 settings type specified = %d\n",
+                static_cast<int>(profile->ipv6AddrType));
+        rc = -1;
+        break;
+    }
+
+    action->endOfProcessing();
+
+    /*
+     * TODO: remove this when VNM network API is available.
+     * Eventually this action will be received on another
+     * IPC mechanism originating from VNM - for now create
+     * and queue it internally.
+     */
+    new_action = new WlanAction {WlanActionType::WstasTypeIpAddrCmplt,
+                                 WlanActionSource::SrcInternal};
+
+    (ctx->wlan_srv)->queueAction(new_action);
+
+    /* Clean-up */
+    if (profile) {
+        delete(profile);
+    }
+
+    EXIT();
+    return(rc);
+}
+/* Non State Change Event Functions *******************************************/
+
+// TODO: add doxygen
+const char* Wstas::currentState()
+{
+    const char *str = NULL;
+
+    switch (StateMachine::state()) {
+    case (StaSmState::Min):
+        str = "Min";
+        break;
+    case (StaSmState::Off):
+        str = "Off";
+        break;
+    case (StaSmState::Enabling):
+        str = "Enabling";
+        break;
+    case (StaSmState::On):
+        str = "On";
+        break;
+    case (StaSmState::Connecting):
+        str = "Connecting";
+        break;
+    case (StaSmState::Connected):
+        str = "Connected";
+        break;
+    case (StaSmState::Disconnecting):
+        str = "Disconnecting";
+        break;
+    case (StaSmState::Disabling):
+        str = "Disabling";
+        break;
+    case (StaSmState::Error):
+        str = "Error";
+        break;
+    case (StaSmState::Max):
+        str = "Max";
+        break;
+    default:
+        str = "UNKNOWN";
+        break;
+    }
+
+    return(str);
+}
+
+
+// TODO: add doxygen
+void Wstas::handleEventScanResults(WlanAction *action)
+{
+    WlanContext_t *ctx = NULL;
+    ScanResults_t res;
+    ENTER();
+
+    action->startOfProcessing();
+
+    ctx = (WlanContext *)m_globalCtx;
+
+    action->unpack(&res);
+
+    /* send the scan results to wlan_ipc for distrubtion */
+    (ctx->wlan_ipc)->sendMsg(res);
+
+    action->endOfProcessing();
+
+    EXIT();
+    return;
+} /* Wstas::handleEventScanResults */
+
+
+// TODO: add Doxygen
+int Wstas::setIpv4AddressStatic(ipv4Addr_t ip)
+{
+#ifndef OFF_TARGET_BUILD
+//    const char ifconfigCmd[MAX_LEN_START_CMD] = {'\0'};
+    WlanContext_t* ctx = NULL;
+    std::string ifname;
+    int rc = 0;
+    ENTER();
+
+    ctx = (WlanContext_t*)m_globalCtx;
+    (ctx->wpa_supp)->interface(ifname);
+    // TODO: handle this error
+
+    /*
+     * TODO: call API to set interface with static IP...sendMsg(???)
+     * Temporary solution is to do it ourselves until VNM API is
+     * available
+     */
+
+    ctx->vnm_ipc->requestStaticIpv4(ifname.c_str(), ip);
+    INFO("Called into VMN_IPC STATIC");
+
+    /*
+    INFO("Setting static IP address on interface = %s\n", ifname.c_str());
+    rc = snprintf((char*)ifconfigCmd, MAX_LEN_START_CMD,
+            "ifconfig %s %s netmask %s",
+            ifname.c_str(),
+            ip.ip,
+            ip.netmask);
+
+    rc = os_system(ifconfigCmd);
+    if (rc) {
+        ERROR("Failed to set IP address with \"%s\" - %d\n", ifconfigCmd, rc);
+        rc = -1;
+    } else {
+        INFO("Successfully set static IP address - \"%s\"\n", ifconfigCmd);
+    }
+    */
+#else
+    int rc = 0;
+    std::string ifname;
+    WlanContext_t* ctx = NULL;
+    ENTER();
+
+    ctx = (WlanContext_t*)m_globalCtx;
+    (ctx->wpa_supp)->interface(ifname);
+    INFO("Called into VMN_IPC STATIC\n");
+    ctx->vnm_ipc->requestStaticIpv4(ifname.c_str(), ip);
+    WARN("Skipping static IP addressing for off-target mode\n");
+#endif /* OFF_TARGET_BUILD */
+
+    EXIT();
+    return rc;
+}
+
+
+// TODO: add Doxygen
+int Wstas::setIpv4AddressDynamic()
+{
+#ifndef OFF_TARGET_BUILD
+    const char dhclientCmd[MAX_LEN_START_CMD] = {'\0'};
+    WlanContext_t* ctx = NULL;
+    std::string ifname;
+    int rc = 0;
+    ENTER();
+
+    ctx = (WlanContext_t*)m_globalCtx;
+    (ctx->wpa_supp)->interface(ifname);
+    // TODO: handle this error
+
+    /*
+     * TODO: call API to set interface with DHCP address...
+     * sendMsg(DHCP_IPV4_START, <interface name>)
+     * Temporary solution is to do it ourselves until VNM API is
+     * available
+     */
+    INFO("Starting dhclient on interface = %s\n", ifname.c_str());
+    rc = snprintf((char*)dhclientCmd, MAX_LEN_START_CMD,
+            "dhclient %s", ifname.c_str());
+
+    rc = os_system(dhclientCmd);
+    if (rc) {
+        ERROR("Failed to start dhclient with \"%s\" - %d\n", dhclientCmd, rc);
+        rc = -1;
+    } else {
+        INFO("dhclient started successfully - \"%s\"\n", dhclientCmd);
+    }
+#else
+    int rc = 0;
+    ENTER();
+
+    WARN("Skipping dynamic IP addressing for off-target mode\n");
+#endif /* OFF_TARGET_BUILD */
+
+    EXIT();
+    return rc;
+}
+/******************************************************************************/
+} /* wlan*/
+/******************************************************************************/
+/* EOF */
+

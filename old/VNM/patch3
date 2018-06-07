@@ -1,0 +1,362 @@
+commit 839114d3c8781f6588ff231c7cfa1099e1fdea3a
+Author: khammel <khammel@ford.com>
+Date:   Tue Mar 27 09:25:12 2018 -0400
+
+    adding more framework code
+
+diff --git a/service/main.cpp b/service/main.cpp
+index 0930af0..7b335c8 100644
+--- a/service/main.cpp
++++ b/service/main.cpp
+@@ -380,6 +380,16 @@ static int init(WlanContext_t *ctx)
+     }
+ #endif /* CONFIG_WLANIPC_FEATURE */
+ 
++    /* start up wlan-ipc */
++    ctx->vnm_ipc = new VnmIpc((void *)ctx);
++    if ((ctx->vnm_ipc)->start()) {
++        DEBUG("Started vnm_ipc\n");
++    } else {
++        ERROR("Failed to start vnm_ipc\n");
++        rc = -1;
++        goto CLEANUP;
++    }
++
+     /* successful init!*/
+     ctx->running = true;
+     ctx->starting = false;
+@@ -406,6 +416,14 @@ static int deinit(WlanContext_t *ctx)
+     /* signal all threads to end */
+     ctx->running = false;
+ 
++    /* clean up wlan-ipc thread */
++    INFO("Cleaning up vnm ipc\n");
++    (ctx->vnm_ipc)->stop();
++    delete(ctx->vnm_ipc);
++    ctx->vnm_ipc = NULL;
++    INFO("vnm_ipc cleaned up\n");
++
++
+ #ifdef CONFIG_WLANIPC_THREAD
+     /* clean up wlan-ipc thread */
+     INFO("Cleaning up wlan ipc\n");
+diff --git a/service/main.hpp b/service/main.hpp
+index 5e7d438..0d6a2e7 100644
+--- a/service/main.hpp
++++ b/service/main.hpp
+@@ -85,6 +85,7 @@ typedef struct WlanContext {
+     HostApd         *hostapd;
+     WpaSupp         *wpa_supp;
+     DrvCtrl         *drv_ctrl;
++    VnmIpc          *vnm_ipc;
+ 
+ #ifdef CONFIG_WSTAS_FEATURE
+     Wstas           *wstas;
+@@ -113,6 +114,7 @@ typedef struct WlanContext {
+ #ifdef CONFIG_TCUIPC_FEATURE
+     TcuIpcClient    *tcu_ipc;
+ #endif /* CONFIG_TCUIPC_FEATURE */
++
+ } WlanContext_t;
+ /******************************************************************************/
+ } /* wlan_srv */
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 991377e..16ec3d1 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -40,6 +40,18 @@ VnmIpc::VnmIpc(void *ctx):
+     m_globalCtx(ctx)
+ {
+     ENTER();
++
++    m_running = false;
++
++    m_intfs.clear();
++    m_reqsQ.clear();
++
++    m_signalPipeRead = -1;
++    m_signalPipeWrite = -1;
++
++    FD_ZERO(m_rfds);
++    m_highestFd = 0;
++
+     EXIT();
+ } /* VnmIpc::VnmIpc() */
+ 
+@@ -47,16 +59,35 @@ VnmIpc::VnmIpc(void *ctx):
+ VnmIpc::~VnmIpc()
+ {
+     ENTER();
++
++    // TODO: add clean up code here
++
+     EXIT();
+ } /* VnmIpc::VnmIpc() */
+ 
+ 
+ bool VnmIpc::start()
+ {
++    int pipeFd[2] = {-1, -1};
+     bool rc = false;
++    int ret = 0;
+ 
+     ENTER();
+ 
++    /* open our pipe */
++    ret - pipe(pipeFd);
++    if (ret) {
++        ERROR("Failed to allocate pipe - %s\n", strerror(errno));
++        rc = false;
++        goto LEAVE;
++    } else {
++        DEBUG("Successfully created a pipe - fd = %d/%d\n", pipeFd[0], pipeFd[1]);
++    }
++
++    /* save the fd's for the pipe */
++    m_signalPipeRead = pipeFd[0];
++    m_signalPipeWrite = pipeFd[1];
++
+     // TODO: start resources so that we can monitor for ip address changes on
+     // intf we care about
+ 
+@@ -67,6 +98,11 @@ bool VnmIpc::start()
+         goto LEAVE;
+     }
+ 
++    /* start the mainLoop in it's own thread */
++    m_running = true;
++    m_thread = new std::thread(&VnmIpc::waitForData, this);
++    rc = true;
++
+     INFO("Successfully started vnm_ipc\n");
+     rc = true;
+ 
+@@ -82,6 +118,8 @@ bool VnmIpc::stop(const char *intf)
+ 
+     ENTER();
+ 
++    // TODO: add more code to clean up what we started here
++
+     // TODO: stop any resources we started
+     m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode(intf); //this should be from the inft_list
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+@@ -99,18 +137,115 @@ LEAVE:
+ } /* VnmIpc::stop() */
+ 
+ 
++void VnmIpc::waitForData()
++{
++    struct timeval tv = {0};
++    int ret = 0;
++
++    ENTER();
++
++    while (m_running)
++    {
++        TRACE("waiting for new connections...\n");
++
++        // TODO: setup the rfds with the sockets we need to monitor
++
++        /* use a time out of 1 sec so shutdown is timely */
++        tv.tv_sec = 1;
++        tv.tv_usec = 0;
++
++        ret = select(maxFd + 1, &rfds, NULL, NULL, &tv);
++        switch (ret) {
++        case (-1):
++            WARN("select returned error - %s\n", strerror(errno));
++            break;
++        case (0):
++            TRACE("Time out from select()\n");
++            break;
++        default:
++            DEBUG("select returned with data to read\n");
++            handleFdsReady();
++            break;
++        } /* switch (ret) */
++    } /* while (m_running) */
++
++    EXIT();
++    return();
++} /* VnmIpc::waitForData() */
++
++
++void VnmIpc::setupRfds(void)
++{
++    ENTER();
++
++    //TODO: go through our intfs list and build up the rfds of fds to wait for
++
++    //TODO: figure out what the highest/largest fd is and set it +1 to m_highestFd
++
++    EXIT();
++} /* VnmIpc::setupRfds() */
++
++
++void VnmIpc::handleFdsReady(void)
++{
++    ENTER();
++
++    //TODO: there is data to read on one of our fds, figure out which one, then
++    // call into a function to do a generic read of the fd to clear the new data
++    // If the data is on the pipe send it off to the handlePipeRead()
++
++    EXIT();
++    return();
++} /* VnmIpc::handleFds() */
++
++
++bool signalVnmIpc(void)
++{
++    bool rc = false;
++
++    ENTER();
++
++    //TODO: write to the pipe to wake up the main thread
++
++    INFO("Successfully wrote to wake up vnm_ipc main thread\n");
++    rc = true;
++
++    EXIT();
++    return(rc);
++} /* VnmIpc::signalVnmIpc() */
++
++
++void VnmIpc::handlePipeRead()
++{
++    ENTER();
++
++    // TODO: use this function to handle when there is data on the pipe...aka
++    // clear the pipe, go through m_intfs and look for new entries, open any
++    // and all fds that will be used to monitor for ip address changes.
++
++    EXIT();
++} /* VnmIpc::handlePipeRead() */
++
++
+ bool VnmIpc::clearIpv4(const char *intf)
+ {
+     bool rc = false;
+ 
+     ENTER();
+ 
+-    // TODO: request that all ipv4 addressing on the interface are cleared
+-    m_vnmIpcRetCode = m_vnmIpcInstance.clearIpAddress(intf);
+-    if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+-        ERROR("Failed to clear IPv4 IP Address using vnm_ipc\n");
++    // create a new vnmIpcReq_t to clear for the interface request
++
++    // add it to the queue
++
++    // signal vnm_ipc that there is a new request
++    rc = signalVnmIpc();
++    if (rc == false) {
++        ERROR("Failed to signal vnm_ipc of our request!\n");
++        // TODO: this is a major failure...need to do more here
+         rc = false;
+         goto LEAVE;
++    } else {
++        DEBUG("Successfully signaled vnm_ipc of our request!\n");
+     }
+ 
+     INFO("Successfully cleared the ipv4 addr on intf = %s\n", intf);
+diff --git a/service/vnm_ipc/vnm_ipc.hpp b/service/vnm_ipc/vnm_ipc.hpp
+index 1273c3c..35636cc 100644
+--- a/service/vnm_ipc/vnm_ipc.hpp
++++ b/service/vnm_ipc/vnm_ipc.hpp
+@@ -26,6 +26,33 @@ namespace wlan {
+ /******************************************************************************/
+ 
+ /* DEFINES ********************************************************************/
++typedef struct VnmIpcIntf {
++    std::string     intf;
++    int             fd = {-1};
++} VnmIpcIntf_t;
++
++
++enum class VnmIpcReqType
++{
++    Min = 0,
++    Add,
++    Clear,
++    Max
++};
++
++
++typedef struct VnmIpcReq {
++    std::string     intf;
++    VnmIpcReqType   type = {VnmIpcReqType::Add};
++    Ipv4AddrType    ipv4Type = {Ipv4AddrType::None};
++    union {
++        ipv4Addr_t  staticAddr;
++    } ipv4;
++    Ipv6AddrType    ipv6TypeAddr = {Ipv6AddrType::None};
++    union {
++        ipv6Addr_t  staticAddr;
++    } ipv6;
++} VnmIpcReq_t;
+ /* ****************************************************************************/
+ 
+ /* GLOBALS ********************************************************************/
+@@ -55,10 +82,61 @@ class VnmIpc
+ 
+         void *m_globalCtx;
+ 
++        bool m_running;
++        std::thread m_thread;
++
+         std::string m_vnmIpcId = "wlanSrv";
+ 
+         fnv::vnm::VnmIpc m_vnmIpcInstance;
+         fnv::vnm::VnmIpcRet_t m_vnmIpcRetCode;
++
++        /*
++         * the list of interfaces that have requests on them and that we should
++         * be monitoring for IP addressing changes
++         */
++        std::list<VnmIpcIntfs_t> m_intfs;
++
++        /*
++         * a queue for incoming requests
++         */
++        std::dequeu<VnmIpcReq_t *> m_reqsQ;
++
++        /* mutex for queue */
++        std::mutex m_qMutex;
++
++        /* pipe for signalling when we put something in the queue */
++        int m_signalPipeRead;
++        int m_signalPipeWrite;
++
++        /* stuff for select loop */
++        fd_set m_rfds;
++        int m_highestFd;
++
++        /*
++         * main processing loop for thread
++         */
++        void waitForData(void);
++
++        /*
++         * helper function to setup m_rfds and m_highestFd
++         */
++        void setupRfds();
++
++        /*
++         * determines which fd has something for us to do
++         */
++        void handleFdsReady(void);
++
++        /*
++         * handles when we have something on our read pipe
++         */
++        void handlePipeRead(void);
++
++        /*
++         * helper function that abstracts signalling the vnm_ipc thread via
++         * the pipe.
++         */
++        bool signalVnmIpc(void);
+ };
+ /******************************************************************************/
+ } /* wlan */

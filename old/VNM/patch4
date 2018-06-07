@@ -1,0 +1,223 @@
+commit 086be99f044b10b3fd9f205b9b8fa42a477b1095
+Author: Kyle Johnston <kjohn402@ford.com>
+Date:   Tue Mar 27 16:54:47 2018 -0400
+
+    fixed compile, added InterfaceListCheck fn
+
+diff --git a/service/main.cpp b/service/main.cpp
+index 7b335c8..254064c 100644
+--- a/service/main.cpp
++++ b/service/main.cpp
+@@ -380,7 +380,7 @@ static int init(WlanContext_t *ctx)
+     }
+ #endif /* CONFIG_WLANIPC_FEATURE */
+ 
+-    /* start up wlan-ipc */
++    /* start up vnm-ipc */
+     ctx->vnm_ipc = new VnmIpc((void *)ctx);
+     if ((ctx->vnm_ipc)->start()) {
+         DEBUG("Started vnm_ipc\n");
+@@ -416,7 +416,7 @@ static int deinit(WlanContext_t *ctx)
+     /* signal all threads to end */
+     ctx->running = false;
+ 
+-    /* clean up wlan-ipc thread */
++    /* clean up vnm-ipc thread */
+     INFO("Cleaning up vnm ipc\n");
+     (ctx->vnm_ipc)->stop();
+     delete(ctx->vnm_ipc);
+diff --git a/service/vnm_ipc/vnm_ipc.cpp b/service/vnm_ipc/vnm_ipc.cpp
+index 16ec3d1..4b32aa8 100644
+--- a/service/vnm_ipc/vnm_ipc.cpp
++++ b/service/vnm_ipc/vnm_ipc.cpp
+@@ -50,7 +50,7 @@ VnmIpc::VnmIpc(void *ctx):
+     m_signalPipeWrite = -1;
+ 
+     FD_ZERO(m_rfds);
+-    m_highestFd = 0;
++    m_maxFd = 0;
+ 
+     EXIT();
+ } /* VnmIpc::VnmIpc() */
+@@ -75,7 +75,7 @@ bool VnmIpc::start()
+     ENTER();
+ 
+     /* open our pipe */
+-    ret - pipe(pipeFd);
++    ret = pipe(pipeFd);
+     if (ret) {
+         ERROR("Failed to allocate pipe - %s\n", strerror(errno));
+         rc = false;
+@@ -112,16 +112,23 @@ LEAVE:
+ } /* VnmIpc::start() */
+ 
+ 
+-bool VnmIpc::stop(const char *intf)
++bool VnmIpc::stop()
+ {
+     bool rc = false;
+ 
+     ENTER();
+ 
+     // TODO: add more code to clean up what we started here
++    if (m_signalPipeRead >= 0) {
++        close(m_signalPipeRead);
++    }
++
++    if (m_signalPipeWrite >= 0) {
++        close(m_signalPipeWrite);
++    }
+ 
+     // TODO: stop any resources we started
+-    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode(intf); //this should be from the inft_list
++    m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpIdleMode("intf"); //this should be from the inft_list
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+         ERROR("Failed to set DHCP Idle Mode for vnm_ipc\n");
+         rc = false;
+@@ -149,12 +156,15 @@ void VnmIpc::waitForData()
+         TRACE("waiting for new connections...\n");
+ 
+         // TODO: setup the rfds with the sockets we need to monitor
++        FD_ZERO(m_rfds);
++        FD_SET(m_signalPipeRead, m_rfds);
+ 
++        m_maxFd = m_signalPipeRead;
+         /* use a time out of 1 sec so shutdown is timely */
+         tv.tv_sec = 1;
+         tv.tv_usec = 0;
+ 
+-        ret = select(maxFd + 1, &rfds, NULL, NULL, &tv);
++        ret = select(m_maxFd + 1, m_rfds, NULL, NULL, &tv);
+         switch (ret) {
+         case (-1):
+             WARN("select returned error - %s\n", strerror(errno));
+@@ -170,7 +180,7 @@ void VnmIpc::waitForData()
+     } /* while (m_running) */
+ 
+     EXIT();
+-    return();
++    return;
+ } /* VnmIpc::waitForData() */
+ 
+ 
+@@ -195,11 +205,11 @@ void VnmIpc::handleFdsReady(void)
+     // If the data is on the pipe send it off to the handlePipeRead()
+ 
+     EXIT();
+-    return();
++    return;
+ } /* VnmIpc::handleFds() */
+ 
+ 
+-bool signalVnmIpc(void)
++bool VnmIpc::signalVnmIpc(void)
+ {
+     bool rc = false;
+ 
+@@ -311,6 +321,7 @@ bool VnmIpc::requestDhcpServer(const char *intf /* server config */)
+ 
+     ENTER();
+ 
++
+     // TODO: request tha a dhcp server, using the config specified be started
+     m_vnmIpcRetCode = m_vnmIpcInstance.setDhcpServerMode(intf);
+     if (m_vnmIpcRetCode != fnv::vnm::VNMIPC_SUCCESS) {
+@@ -329,6 +340,36 @@ LEAVE:
+     return(rc);
+ } /* VnmIpc::requestDhcpServer() */
+ 
++bool VnmIpc::checkIntfList(const char *intf)
++{
++    bool rc = false;
++    VnmIpcIntf_t intfToAdd;
++
++    ENTER();
++
++    intfToAdd.intf = intf;
++    intfToAdd.fd = socket(AF_INET, SOCK_DGRAM, 0);
++
++    if (m_intfs.empty()){
++        DEBUG("Interface List was empty, adding interface");
++        m_intfs.push_back(intfToAdd);
++    } else {
++        for (auto iter = m_intfs.begin();
++                  iter != m_intfs.end();
++                  iter++) {
++            if (strncmp(iter->intf.c_str(),intf,sizeof(&intf)) == 0) {
++                DEBUG("Interface already added to list");
++                break;
++            } /* if */
++        } /* for() */
++        DEBUG("Interface was not in our list, adding");
++        m_intfs.push_back(intfToAdd);
++    }
++
++    rc = true;
++    EXIT();
++    return(rc);
++} /* VnmIpc::findIntfFd() */
+ /******************************************************************************/
+ } /* wlan*/
+ /******************************************************************************/
+diff --git a/service/vnm_ipc/vnm_ipc.hpp b/service/vnm_ipc/vnm_ipc.hpp
+index 35636cc..42d5d7f 100644
+--- a/service/vnm_ipc/vnm_ipc.hpp
++++ b/service/vnm_ipc/vnm_ipc.hpp
+@@ -66,7 +66,7 @@ class VnmIpc
+         virtual ~VnmIpc();
+ 
+         bool start();
+-        bool stop(const char *intf);
++        bool stop();
+ 
+         /* IPv4 stuff */
+         bool clearIpv4(const char *intf);
+@@ -83,7 +83,7 @@ class VnmIpc
+         void *m_globalCtx;
+ 
+         bool m_running;
+-        std::thread m_thread;
++        std::thread *m_thread;
+ 
+         std::string m_vnmIpcId = "wlanSrv";
+ 
+@@ -94,12 +94,12 @@ class VnmIpc
+          * the list of interfaces that have requests on them and that we should
+          * be monitoring for IP addressing changes
+          */
+-        std::list<VnmIpcIntfs_t> m_intfs;
++        std::list<VnmIpcIntf_t> m_intfs;
+ 
+         /*
+          * a queue for incoming requests
+          */
+-        std::dequeu<VnmIpcReq_t *> m_reqsQ;
++        std::deque<VnmIpcReq_t *> m_reqsQ;
+ 
+         /* mutex for queue */
+         std::mutex m_qMutex;
+@@ -109,8 +109,8 @@ class VnmIpc
+         int m_signalPipeWrite;
+ 
+         /* stuff for select loop */
+-        fd_set m_rfds;
+-        int m_highestFd;
++        fd_set *m_rfds;
++        int m_maxFd;
+ 
+         /*
+          * main processing loop for thread
+@@ -137,6 +137,13 @@ class VnmIpc
+          * the pipe.
+          */
+         bool signalVnmIpc(void);
++
++        /*
++         * helper function that check whether an interface is already being monitored
++         * and adds it to the list if not, keep track of the fd associated with that 
++         * interface.
++         */
++        bool checkIntfList(const char *intf);
+ };
+ /******************************************************************************/
+ } /* wlan */
